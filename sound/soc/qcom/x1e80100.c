@@ -43,6 +43,11 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 		snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", 81);
 		snd_soc_limit_volume(card, "WSA2 WSA_RX0 Digital Volume", 81);
 		snd_soc_limit_volume(card, "WSA2 WSA_RX1 Digital Volume", 81);
+		/* The MIX paths feed the same amplifier; do not leave them at +40 dB */
+		snd_soc_limit_volume(card, "WSA WSA_RX0_MIX Digital Volume", 81);
+		snd_soc_limit_volume(card, "WSA WSA_RX1_MIX Digital Volume", 81);
+		snd_soc_limit_volume(card, "WSA2 WSA_RX0_MIX Digital Volume", 81);
+		snd_soc_limit_volume(card, "WSA2 WSA_RX1_MIX Digital Volume", 81);
 		snd_soc_limit_volume(card, "SpkrLeft PA Volume", 6);
 		snd_soc_limit_volume(card, "SpkrRight PA Volume", 6);
 		snd_soc_limit_volume(card, "WooferLeft PA Volume", 6);
