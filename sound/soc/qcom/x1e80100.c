@@ -37,11 +37,16 @@ static int x1e80100_limit_volume(struct snd_soc_card *card, const char *name,
 		return 0;
 
 	ret = snd_soc_limit_volume(card, name, max);
-	if (ret)
+	if (ret < 0) {
 		dev_err(card->dev, "speaker volume cap failed for %s: %d\n",
 			name, ret);
+		return ret;
+	}
 
-	return ret;
+	dev_info(card->dev, "speaker volume cap installed for %s: %d\n",
+		 name, ret);
+
+	return 0;
 }
 
 static int x1e80100_install_spk_caps(struct snd_soc_card *card)
@@ -82,6 +87,22 @@ static int x1e80100_install_spk_caps(struct snd_soc_card *card)
 			return ret;
 	}
 	sp11_guard_caps_ready(true);
+	dev_info(card->dev, "speaker volume caps ready\n");
+	return 0;
+}
+
+static int x1e80100_card_late_probe(struct snd_soc_card *card)
+{
+	if (!of_machine_is_compatible("microsoft,denali"))
+		return 0;
+
+	/*
+	 * late_probe runs after all card components have bound and before ALSA
+	 * registers PCM devices, so WSA controls exist before caps are required.
+	 * Keep the card available for microphones/DP if a speaker control is
+	 * absent; caps_ready remains false and the amplifier stays muted.
+	 */
+	x1e80100_install_spk_caps(card);
 	return 0;
 }
 
@@ -92,17 +113,11 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_card *card = rtd->card;
 	struct snd_soc_jack *dp_jack = NULL;
 	int dp_pcm_id = 0;
-	int ret;
 
 	switch (cpu_dai->id) {
 	case WSA_CODEC_DMA_RX_0:
 	case WSA_CODEC_DMA_RX_1:
-		if (of_machine_is_compatible("microsoft,denali")) {
-			/* Require every applicable cap before exposing WSA playback. */
-			ret = x1e80100_install_spk_caps(card);
-			if (ret)
-				break;
-		} else {
+		if (!of_machine_is_compatible("microsoft,denali")) {
 			snd_soc_limit_volume(card, "WSA WSA_RX0 Digital Volume", 81);
 			snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", 81);
 			snd_soc_limit_volume(card, "WSA2 WSA_RX0 Digital Volume", 81);
@@ -366,6 +381,7 @@ static int x1e80100_platform_probe(struct platform_device *pdev)
 		return ret;
 
 	card->driver_name = of_device_get_match_data(dev);
+	card->late_probe = x1e80100_card_late_probe;
 	x1e80100_add_be_ops(card);
 
 	if (of_machine_is_compatible("microsoft,denali") && sp11_guard_nospk())
