@@ -288,10 +288,6 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	val = RDI_CFG1_TIMESTAMP_STB_FRAME;
 	val |= RDI_CFG1_BYTE_CNTR_EN;
 	val |= RDI_CFG1_TIMESTAMP_EN;
-	val |= RDI_CFG1_DROP_H_EN;
-	val |= RDI_CFG1_DROP_V_EN;
-	val |= RDI_CFG1_CROP_H_EN;
-	val |= RDI_CFG1_CROP_V_EN;
 	val |= RDI_CFG1_PACKING_MIPI;
 
 	writel(val, csid->base + CSID_RDI_CFG1(port));
