@@ -483,27 +483,74 @@ out:
 	return ret;
 }
 
+/*
+ * This firmware expects the 16-byte module event form the Windows GSL client
+ * sends: qcadcm8380.sys registers a custom event with payload size 0x10
+ * (instance, event id, register flag, configuration size). The kernel's
+ * apm_module_register_events adds error_code and reserved for 24 bytes and the
+ * DSP answered that packet with status 3. Send the short form first and keep
+ * the long one as a fallback so no other target regresses.
+ */
+struct sp11_module_event_short {
+	__le32 module_instance_id;
+	__le32 event_id;
+	__le32 is_register;
+	__le32 event_config_payload_size;
+} __packed;
+
+static int sp11_send_module_event(struct q6apm_graph *graph,
+				  const struct audioreach_module *module,
+				  u32 event_id, bool short_form)
+{
+	void *p;
+
+	if (short_form) {
+		struct sp11_module_event_short *event;
+		struct gpr_pkt *pkt __free(kfree) =
+			audioreach_alloc_cmd_pkt(sizeof(*event), APM_CMD_REGISTER_MODULE_EVENTS, 0,
+						 graph->port->id, module->instance_id);
+
+		if (IS_ERR(pkt))
+			return PTR_ERR(pkt);
+		p = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
+		event = p;
+		event->module_instance_id = module->instance_id;
+		event->event_id = event_id;
+		event->is_register = 1;
+		event->event_config_payload_size = 0;
+		return audioreach_graph_send_cmd_sync(graph, pkt, 0);
+	} else {
+		struct apm_module_register_events *event;
+		struct gpr_pkt *pkt __free(kfree) =
+			audioreach_alloc_cmd_pkt(sizeof(*event), APM_CMD_REGISTER_MODULE_EVENTS, 0,
+						 graph->port->id, module->instance_id);
+
+		if (IS_ERR(pkt))
+			return PTR_ERR(pkt);
+		p = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
+		event = p;
+		event->module_instance_id = module->instance_id;
+		event->event_id = event_id;
+		event->is_register = 1;
+		event->event_config_payload_size = 0;
+		return audioreach_graph_send_cmd_sync(graph, pkt, 0);
+	}
+}
+
 static int sp11_register_one_event(struct q6apm_graph *graph,
 				   const struct audioreach_module *module,
 				   u32 event_id)
 {
-	struct apm_module_register_events *event;
-	void *p;
+	int ret;
 
-	struct gpr_pkt *pkt __free(kfree) =
-		audioreach_alloc_cmd_pkt(sizeof(*event), APM_CMD_REGISTER_MODULE_EVENTS, 0,
-					 graph->port->id, module->instance_id);
-	if (IS_ERR(pkt))
-		return PTR_ERR(pkt);
+	ret = sp11_send_module_event(graph, module, event_id, true);
+	if (!ret)
+		return 0;
+	dev_info(graph->dev,
+		 "event 0x%08x registration: short form failed (%d), retrying the long form\n",
+		 event_id, ret);
 
-	p = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
-	event = p;
-	event->module_instance_id = module->instance_id;
-	event->event_id = event_id;
-	event->is_register = 1;
-	event->event_config_payload_size = 0;
-
-	return audioreach_graph_send_cmd_sync(graph, pkt, 0);
+	return sp11_send_module_event(graph, module, event_id, false);
 }
 
 int audioreach_sp11_register_events(struct q6apm_graph *graph,
