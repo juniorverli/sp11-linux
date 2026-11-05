@@ -415,6 +415,13 @@
 #define WSA884X_DRE_CTL_1_CSR_GAIN_SHIFT		1
 #define WSA884X_DRE_CTL_1_CSR_GAIN_EN_MASK		0x01
 #define WSA884X_DRE_CTL_1_CSR_GAIN_EN_SHIFT		0
+/*
+ * Reset value of the CSR gain field: "PA Volume" 6 (0 dB), not the field
+ * default of 2 which reads back as "PA Volume" 29 (+34.5 dB). The mixer value
+ * is inverted: register field = 0x1f - mixer value.
+ */
+#define WSA884X_DRE_CTL_1_RESET_GAIN \
+	FIELD_PREP_CONST(WSA884X_DRE_CTL_1_CSR_GAIN_MASK, 0x1f - 6)
 #define WSA884X_DRE_IDLE_DET_CTL	(WSA884X_DIG_CTRL0_BASE + 0xb2)
 #define WSA884X_GAIN_RAMPING_CTL	(WSA884X_DIG_CTRL0_BASE + 0xb8)
 #define WSA884X_GAIN_RAMPING_MIN	(WSA884X_DIG_CTRL0_BASE + 0xb9)
@@ -1109,7 +1116,7 @@ static const struct reg_default wsa884x_defaults[] = {
 	{ WSA884X_DEM_BYPASS_DATA2,		0x00 },
 	{ WSA884X_DEM_BYPASS_DATA3,		0x00 },
 	{ WSA884X_DRE_CTL_0,			0x70 },
-	{ WSA884X_DRE_CTL_1,			0x04 },
+	{ WSA884X_DRE_CTL_1,			WSA884X_DRE_CTL_1_RESET_GAIN },
 	{ WSA884X_DRE_IDLE_DET_CTL,		0x2f },
 	{ WSA884X_GAIN_RAMPING_CTL,		0x50 },
 	{ WSA884X_GAIN_RAMPING_MIN,		0x12 },
