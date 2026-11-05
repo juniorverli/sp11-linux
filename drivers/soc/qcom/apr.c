@@ -367,9 +367,16 @@ static int apr_device_probe(struct device *dev)
 	struct apr_driver *adrv = to_apr_driver(dev->driver);
 	int ret;
 
+	/*
+	 * A GPR client may send a command and wait for the response from its
+	 * probe (q6apm asks for the SPF state). The response needs the
+	 * callback, so install it before the probe runs.
+	 */
+	adev->svc.callback = adrv->gpr_callback;
+
 	ret = adrv->probe(adev);
-	if (!ret)
-		adev->svc.callback = adrv->gpr_callback;
+	if (ret)
+		adev->svc.callback = NULL;
 
 	return ret;
 }
