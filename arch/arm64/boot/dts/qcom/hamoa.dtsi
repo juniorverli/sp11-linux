@@ -545,6 +545,16 @@
 			no-map;
 		};
 
+		gpu_prr_mem: gpu-prr@81f00000 {
+			reg = <0x0 0x81f00000 0x0 0x10000>;
+			no-map;
+		};
+
+		pld_gmu_mem: pld-gmu@81f36000 {
+			reg = <0x0 0x81f36000 0x0 0x1000>;
+			no-map;
+		};
+
 		adsp_rpc_remote_heap_mem: adsp-rpc-remote-heap@84b00000 {
 			reg = <0x0 0x84b00000 0x0 0x800000>;
 			no-map;
