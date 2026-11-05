@@ -158,6 +158,20 @@ properties:
             required:
               - data-lanes
 
+            allOf:
+              - if:
+                  properties:
+                    bus-type:
+                      const: 1
+                  required:
+                    - bus-type
+                then:
+                  properties:
+                    data-lanes:
+                      description:
+                        Trios of the C-PHY link. A CSIPHY has three trios.
+                      maxItems: 3
+
 required:
   - compatible
   - reg
