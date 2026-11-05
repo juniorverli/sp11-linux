@@ -173,6 +173,10 @@ static bool sp11cl_validate(struct device *dev, const u8 *data, size_t len,
 	cl->n_links = le32_to_cpu(hdr->n_links);
 	cl->n_cal = le32_to_cpu(hdr->n_cal);
 	cl->flags = le32_to_cpu(hdr->flags);
+	if (cl->flags & ~SP11CL_FLAG_CPS) {
+		dev_err(dev, "sp11cl: unknown flags\n");
+		return false;
+	}
 	for (i = 0; i < SP11_CAL_CH; i++)
 		cl->nominal_re_q24[i] = le32_to_cpu(hdr->nominal_re_q24[i]);
 
@@ -375,11 +379,23 @@ static int sp11_apply_r0t0(struct q6apm_graph *graph, const struct audioreach_mo
 		goto out;
 	}
 
+	if (le32_to_cpu(hdr->flags) & ~SP11CAL_FLAG_NOMINAL) {
+		dev_err(graph->dev, "%s: unknown calibration flags\n", cl->cal_name);
+		ret = -EINVAL;
+		goto out;
+	}
+
 	for (i = 0; i < SP11_CAL_CH; i++) {
 		u64 r0 = le32_to_cpu(hdr->ch[i].r0_q24);
 		s16 t0 = (s16)le16_to_cpu(hdr->ch[i].t0_q6);
 		u64 nom = cl->nominal_re_q24[i];
 
+		if (hdr->ch[i].reserved) {
+			dev_err(graph->dev, "speaker %u calibration reserved field is nonzero\n",
+				i);
+			ret = -EINVAL;
+			goto out;
+		}
 		if (!nom || r0 * 100 < nom * SP11_R0_MIN_PERCENT ||
 		    r0 * 100 > nom * SP11_R0_MAX_PERCENT ||
 		    t0 < SP11_T0_MIN_Q6 || t0 > SP11_T0_MAX_Q6) {

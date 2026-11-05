@@ -487,6 +487,8 @@ static int sp11_guard_show(struct seq_file *s, void *unused)
 		   guard.caps_ready);
 	seq_printf(s, "degraded_fault: %d\n", sp11_guard_degraded_fault());
 	seq_printf(s, "cal_mask: 0x%x\ncal_nominal: %d\n", guard.cal_mask, guard.cal_nominal);
+	seq_printf(s, "cal_graph_matches_vi: %d\nvi_ambiguous: %d\n",
+		   sp11_guard_cal_matches_vi(), guard.vi_ambiguous);
 	seq_printf(s, "fault: %d (%s, 0x%08x)\nnospk: %d\nallow_nominal: %d\n",
 		   guard.fault, guard.fault ? guard.fault_src : "-", guard.fault_code,
 		   nospk, allow_nominal);
