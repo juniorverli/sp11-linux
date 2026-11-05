@@ -42,6 +42,32 @@
 		pinctrl-names = "default";
 	};
 
+	/*
+	 * Volume buttons (ACPI MSHW0040, Windows \_SB.PM01 pins 0xD5 and 0xD7,
+	 * PullUp, input only, shared, not wake capable). Whether the first pin
+	 * is up and the second down is an inference; confirm on the device.
+	 */
+	volume-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&vol_up_n>, <&vol_down_n>;
+		pinctrl-names = "default";
+
+		key-volume-up {
+			label = "Volume Up";
+			gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+			debounce-interval = <15>;
+		};
+
+		key-volume-down {
+			label = "Volume Down";
+			gpios = <&pm8550_gpios 8 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEDOWN>;
+			debounce-interval = <15>;
+		};
+	};
+
 	vreg_ts: regulator-ts {
 		compatible = "regulator-fixed";
 		regulator-name = "VREG_TS";
@@ -74,6 +100,24 @@
 	edp_bl_reg_en: edp-bl-reg-en-state {
 		pins = "gpio10";
 		function = "normal";
+	};
+};
+
+&pm8550_gpios {
+	vol_up_n: vol-up-n-state {
+		pins = "gpio6";
+		function = "normal";
+		power-source = <1>; /* 1.8 V */
+		bias-pull-up;
+		input-enable;
+	};
+
+	vol_down_n: vol-down-n-state {
+		pins = "gpio8";
+		function = "normal";
+		power-source = <1>; /* 1.8 V */
+		bias-pull-up;
+		input-enable;
 	};
 };
 
