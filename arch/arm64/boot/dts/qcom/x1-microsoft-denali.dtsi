@@ -23,7 +23,7 @@
 	camera-leds {
 		compatible = "gpio-leds";
 
-		pinctrl-0 = <&cam_indicator_en>;
+		pinctrl-0 = <&cam_indicator_en>, <&cam_rear_indicator_en>;
 		pinctrl-names = "default";
 
 		/* Disabled until the camera indicator wiring is confirmed on this unit */
@@ -33,6 +33,15 @@
 			function = LED_FUNCTION_INDICATOR;
 			color = <LED_COLOR_ID_WHITE>;
 			gpios = <&tlmm 225 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "none";
+			default-state = "off";
+		};
+
+		camera_indicator_rear: led-camera-indicator-rear {
+			function = LED_FUNCTION_INDICATOR;
+			function-enumerator = <1>;
+			color = <LED_COLOR_ID_WHITE>;
+			gpios = <&tlmm 105 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "none";
 			default-state = "off";
 		};
@@ -790,6 +799,7 @@
 
 &cci0_i2c1 {
 	/* Rear camera bus, GPIO103 (SDA) and GPIO104 (SCL) */
+	clock-frequency = <400000>;
 	#address-cells = <1>;
 	#size-cells = <0>;
 
@@ -813,18 +823,23 @@
 		orientation = <1>;
 
 		/*
-		 * The only camera indicator known on this unit is GPIO225. Light it
-		 * whenever the rear sensor streams until the rear indicator, if
-		 * any, is identified.
+		 * The rear sensor lights its own indicator, GPIO105. GPIO225 is
+		 * the indicator of the front and IR sensors.
 		 */
-		leds = <&camera_indicator>;
+		leds = <&camera_indicator_rear>;
 		led-names = "privacy";
+
+		/*
+		 * Optional register blob with the three modes Windows uses
+		 * (1185.6 Mbit/s per lane), generated locally on the device.
+		 */
+		firmware-name = "ov13858-mshw0491.bin";
 
 		port {
 			rear_camera_ep: endpoint {
 				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
 				data-lanes = <1 2 3 4>;
-				link-frequencies = /bits/ 64 <270000000 540000000>;
+				link-frequencies = /bits/ 64 <270000000 540000000 592800000>;
 				remote-endpoint = <&camss_csiphy1_ep>;
 			};
 		};
@@ -1354,10 +1369,17 @@
 		bias-disable;
 	};
 
+	cam_rear_indicator_en: cam-rear-indicator-en-state {
+		pins = "gpio105";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
 	cam_mclk1_default: cam-mclk1-state {
 		pins = "gpio97";
 		function = "cam_mclk";
-		drive-strength = <2>;
+		drive-strength = <4>;
 		bias-disable;
 	};
 
