@@ -783,8 +783,23 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		/* IR sensor core, 1.15 V in the Windows data; the grid has 1.152 V */
+		vreg_l2m_1p15: ldo2 {
+			regulator-name = "vreg_l2m_1p15";
+			regulator-min-microvolt = <1150000>;
+			regulator-max-microvolt = <1152000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
 		vreg_l3m_1p8: ldo3 {
 			regulator-name = "vreg_l3m_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l4m_1p8: ldo4 {
+			regulator-name = "vreg_l4m_1p8";
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
@@ -803,6 +818,13 @@
 			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
+
+		vreg_l7m_2p8: ldo7 {
+			regulator-name = "vreg_l7m_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
 	};
 };
 
@@ -811,6 +833,17 @@
 	vdd-csiphy-1p2-supply = <&vreg_l1c_1p2>;
 
 	ports {
+		/* CSIPHY0, IR VD55G0, one D-PHY lane */
+		port@0 {
+			reg = <0>;
+
+			camss_csiphy0_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				data-lanes = <0>;
+				remote-endpoint = <&ir_camera_ep>;
+			};
+		};
+
 		/* CSIPHY1, rear OV13858 */
 		port@1 {
 			reg = <1>;
@@ -836,8 +869,56 @@
 };
 
 &cci0 {
-	pinctrl-0 = <&cci0_i2c1_default>;
+	pinctrl-0 = <&cci0_i2c0_default>, <&cci0_i2c1_default>;
 	pinctrl-names = "default";
+};
+
+&cci0_i2c0 {
+	/* IR camera bus, GPIO101 (SDA) and GPIO102 (SCL) */
+	clock-frequency = <400000>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/*
+	 * The IR sensor has a model identifier and a firmware patch that the
+	 * vd55g1 driver does not know, so no driver binds this node yet.
+	 * The IR illuminator is a PMIC flash LED and is not described (risk
+	 * S2): nothing here sets st,leds or touches the flash.
+	 */
+	ir_camera: camera@60 {
+		compatible = "st,vd55g0";
+		reg = <0x60>;
+
+		clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 109 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&cam_mclk0_default>, <&cam_ir_rst_n>;
+		pinctrl-names = "default";
+
+		/* The rail roles follow the VD55G1 binding voltages */
+		vcore-supply = <&vreg_l2m_1p15>;
+		vddio-supply = <&vreg_l4m_1p8>;
+		vana-supply = <&vreg_l7m_2p8>;
+
+		orientation = <0>;
+
+		/* GPIO225, shared with the front sensor */
+		leds = <&camera_indicator>;
+		led-names = "privacy";
+
+		port {
+			ir_camera_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				data-lanes = <1>;
+				/* 840 Mbit/s on one lane */
+				link-frequencies = /bits/ 64 <420000000>;
+				remote-endpoint = <&camss_csiphy0_ep>;
+			};
+		};
+	};
 };
 
 &cci0_i2c1 {
@@ -1469,6 +1550,27 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
+	};
+
+	cam_ir_rst_n: cam-ir-reset-n-state {
+		pins = "gpio109";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_mclk0_default: cam-mclk0-state {
+		pins = "gpio96";
+		function = "cam_mclk";
+		drive-strength = <4>;
+		bias-disable;
+	};
+
+	cci0_i2c0_default: cci0-i2c0-state {
+		pins = "gpio101", "gpio102";
+		function = "cci_i2c";
+		drive-strength = <2>;
+		bias-pull-up;
 	};
 
 	cam_front_rst_n: cam-front-reset-n-state {
