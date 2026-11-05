@@ -13,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
@@ -25,6 +26,7 @@
 #include <sound/pcm_params.h>
 #include <sound/soc-dapm.h>
 #include <sound/soc.h>
+#include <sound/sp11-guard.h>
 #include <sound/tlv.h>
 
 #define WSA884X_BASE			0x3000
@@ -732,6 +734,8 @@
 #define WSA884X_LOW_TEMP_THRESHOLD	5
 #define WSA884X_HIGH_TEMP_THRESHOLD	45
 
+#define WSA884X_NUM_FB_DAIS		2
+
 struct wsa884x_priv {
 	struct regmap *regmap;
 	struct device *dev;
@@ -739,6 +743,9 @@ struct wsa884x_priv {
 	struct sdw_slave *slave;
 	struct sdw_stream_config sconfig;
 	struct sdw_stream_runtime *sruntime;
+	struct sdw_stream_config fb_sconfig[WSA884X_NUM_FB_DAIS];
+	struct sdw_port_config fb_pconfig[WSA884X_NUM_FB_DAIS];
+	struct sdw_stream_runtime *fb_sruntime[WSA884X_NUM_FB_DAIS];
 	struct sdw_port_config port_config[WSA884X_MAX_SWR_PORTS];
 	struct gpio_desc *sd_n;
 	struct reset_control *sd_reset;
@@ -747,6 +754,8 @@ struct wsa884x_priv {
 	int active_ports;
 	int dev_mode;
 	bool hw_init;
+	/* The speaker protection guard decides when the PA may be enabled */
+	bool guarded;
 	/* Board settings from the device tree */
 	u32 battery_cells;
 	u32 load_ohms;
@@ -817,6 +826,24 @@ enum wsa884x_port_ids {
 	WSA884X_PORT_CPS,
 };
 
+/* Playback uses ports DAC to PBR, the two feedback ports are capture sources */
+#define WSA884X_NUM_PLAYBACK_PORTS	(WSA884X_PORT_PBR + 1)
+
+/* DAI indices: also the cell of #sound-dai-cells = <1> */
+enum wsa884x_dai_ids {
+	WSA884X_DAI_SPKR,
+	WSA884X_DAI_VI,
+	WSA884X_DAI_CPS,
+	WSA884X_NUM_DAIS,
+};
+
+/*
+ * Interrupt bits that are enabled in the reset state of WSA884X_INTR_MASK0 and
+ * _MASK1. Any of them reported while a stream runs is treated as a fault.
+ */
+#define WSA884X_INTR0_ENABLED		(~0x90 & 0xff)
+#define WSA884X_INTR1_ENABLED		0xff
+
 static const char * const wsa884x_supply_name[] = {
 	"vdd-io",
 	"vdd-1p8",
@@ -834,7 +861,7 @@ enum wsa884x_mode {
 static const struct soc_enum wsa884x_dev_mode_enum =
 	SOC_ENUM_SINGLE_EXT(ARRAY_SIZE(wsa884x_dev_mode_text), wsa884x_dev_mode_text);
 
-static struct sdw_dpn_prop wsa884x_sink_dpn_prop[WSA884X_MAX_SWR_PORTS] = {
+static struct sdw_dpn_prop wsa884x_sink_dpn_prop[WSA884X_NUM_PLAYBACK_PORTS] = {
 	[WSA884X_PORT_DAC] = {
 		.num = WSA884X_PORT_DAC + 1,
 		.type = SDW_DPN_SIMPLE,
@@ -867,22 +894,26 @@ static struct sdw_dpn_prop wsa884x_sink_dpn_prop[WSA884X_MAX_SWR_PORTS] = {
 		.simple_ch_prep_sm = true,
 		.read_only_wordlength = true,
 	},
-	[WSA884X_PORT_VISENSE] = {
+};
+
+/* Voltage/current sense (V and I) and CPS feedback: the amplifier is the source */
+static struct sdw_dpn_prop wsa884x_src_dpn_prop[WSA884X_NUM_FB_DAIS] = {
+	{
 		.num = WSA884X_PORT_VISENSE + 1,
 		.type = SDW_DPN_SIMPLE,
 		.min_ch = 1,
-		.max_ch = 1,
+		.max_ch = 2,
 		.simple_ch_prep_sm = true,
 		.read_only_wordlength = true,
 	},
-	[WSA884X_PORT_CPS] = {
+	{
 		.num = WSA884X_PORT_CPS + 1,
 		.type = SDW_DPN_SIMPLE,
 		.min_ch = 1,
 		.max_ch = 1,
 		.simple_ch_prep_sm = true,
 		.read_only_wordlength = true,
-	}
+	},
 };
 
 static const struct sdw_port_config wsa884x_pconfig[WSA884X_MAX_SWR_PORTS] = {
@@ -902,13 +933,15 @@ static const struct sdw_port_config wsa884x_pconfig[WSA884X_MAX_SWR_PORTS] = {
 		.num = WSA884X_PORT_PBR + 1,
 		.ch_mask = 0x1,
 	},
+	/* V and I of one speaker */
 	[WSA884X_PORT_VISENSE] = {
 		.num = WSA884X_PORT_VISENSE + 1,
-		.ch_mask = 0x1,
+		.ch_mask = 0x3,
 	},
+	/* One channel per speaker, the channel is set from the unique id */
 	[WSA884X_PORT_CPS] = {
 		.num = WSA884X_PORT_CPS + 1,
-		.ch_mask = 0x3,
+		.ch_mask = 0x1,
 	},
 };
 
@@ -1623,6 +1656,18 @@ static void wsa884x_init(struct wsa884x_priv *wsa884x)
 	wsa884x->hw_init = true;
 }
 
+/*
+ * Rebuilding the register state from the cache must not enable the power
+ * amplifier behind the guard's back: keep it off, the next unmute asks the
+ * guard again.
+ */
+static void wsa884x_guard_hold(struct wsa884x_priv *wsa884x)
+{
+	if (wsa884x->guarded)
+		regmap_update_bits(wsa884x->regmap, WSA884X_PA_FSM_EN,
+				   WSA884X_PA_FSM_EN_GLOBAL_PA_EN_MASK, 0);
+}
+
 static int wsa884x_update_status(struct sdw_slave *slave,
 				 enum sdw_slave_status status)
 {
@@ -1647,6 +1692,7 @@ static int wsa884x_update_status(struct sdw_slave *slave,
 	}
 
 	wsa884x_init(wsa884x);
+	wsa884x_guard_hold(wsa884x);
 
 	return 0;
 }
@@ -1665,9 +1711,48 @@ static int wsa884x_port_prep(struct sdw_slave *slave,
 	return 0;
 }
 
+/*
+ * The amplifier reports over-current, thermal, clock and supply events as
+ * implementation-defined SoundWire interrupts. Which bit is which is not
+ * documented here, so any enabled bit latches a speaker fault, whether the
+ * power amplifier is on or not: the status registers are cleared here, so a
+ * report that was dropped would be lost for good. The guard then refuses
+ * playback until reboot and the machine driver mutes the amplifiers. Events
+ * that arrive before the amplifier was initialised are only logged. The raw
+ * status is logged.
+ */
+static int wsa884x_interrupt_callback(struct sdw_slave *slave,
+				      struct sdw_slave_intr_status *status)
+{
+	struct wsa884x_priv *wsa884x = dev_get_drvdata(&slave->dev);
+	unsigned int s0 = 0, s1 = 0;
+	bool pa_on;
+
+	regmap_read(wsa884x->regmap, WSA884X_INTR_STATUS0, &s0);
+	regmap_read(wsa884x->regmap, WSA884X_INTR_STATUS1, &s1);
+	regmap_write(wsa884x->regmap, WSA884X_INTR_CLEAR0, s0);
+	regmap_write(wsa884x->regmap, WSA884X_INTR_CLEAR1, s1);
+
+	s0 &= WSA884X_INTR0_ENABLED;
+	s1 &= WSA884X_INTR1_ENABLED;
+	if (!s0 && !s1)
+		return 0;
+
+	scoped_guard(mutex, &wsa884x->sp_lock)
+		pa_on = wsa884x->pa_on;
+
+	dev_err(&slave->dev, "amplifier interrupt 0x%02x 0x%02x (PA %s)\n", s0, s1,
+		pa_on ? "on" : "off");
+	if (wsa884x->hw_init)
+		sp11_guard_fault(pa_on ? "wsa884x" : "wsa884x-idle", (s1 << 8) | s0);
+
+	return 0;
+}
+
 static const struct sdw_slave_ops wsa884x_slave_ops = {
 	.update_status = wsa884x_update_status,
 	.port_prep = wsa884x_port_prep,
+	.interrupt_callback = wsa884x_interrupt_callback,
 };
 
 static int wsa884x_dev_mode_get(struct snd_kcontrol *kcontrol,
@@ -1866,7 +1951,7 @@ static int wsa884x_hw_params(struct snd_pcm_substream *substream,
 	int i;
 
 	wsa884x->active_ports = 0;
-	for (i = 0; i < WSA884X_MAX_SWR_PORTS; i++) {
+	for (i = 0; i < WSA884X_NUM_PLAYBACK_PORTS; i++) {
 		if (!wsa884x->port_enable[i])
 			continue;
 
@@ -1881,12 +1966,38 @@ static int wsa884x_hw_params(struct snd_pcm_substream *substream,
 				    wsa884x->sruntime);
 }
 
+static int wsa884x_fb_hw_params(struct snd_pcm_substream *substream,
+				struct snd_pcm_hw_params *params,
+				struct snd_soc_dai *dai)
+{
+	struct wsa884x_priv *wsa884x = dev_get_drvdata(dai->dev);
+	int idx = dai->id - WSA884X_DAI_VI;
+	int port = dai->id == WSA884X_DAI_VI ? WSA884X_PORT_VISENSE : WSA884X_PORT_CPS;
+
+	wsa884x->fb_pconfig[idx] = wsa884x_pconfig[port];
+	if (dai->id == WSA884X_DAI_CPS)
+		wsa884x->fb_pconfig[idx].ch_mask = BIT(wsa884x->slave->id.unique_id & 1);
+
+	wsa884x->fb_sconfig[idx].frame_rate = params_rate(params);
+	wsa884x->fb_sconfig[idx].ch_count = hweight8(wsa884x->fb_pconfig[idx].ch_mask);
+	wsa884x->fb_sconfig[idx].bps = 1;
+	wsa884x->fb_sconfig[idx].type = SDW_STREAM_PDM;
+	wsa884x->fb_sconfig[idx].direction = SDW_DATA_DIR_TX;
+
+	return sdw_stream_add_slave(wsa884x->slave, &wsa884x->fb_sconfig[idx],
+				    &wsa884x->fb_pconfig[idx], 1, wsa884x->fb_sruntime[idx]);
+}
+
 static int wsa884x_hw_free(struct snd_pcm_substream *substream,
 			   struct snd_soc_dai *dai)
 {
 	struct wsa884x_priv *wsa884x = dev_get_drvdata(dai->dev);
 
-	sdw_stream_remove_slave(wsa884x->slave, wsa884x->sruntime);
+	if (dai->id == WSA884X_DAI_SPKR)
+		sdw_stream_remove_slave(wsa884x->slave, wsa884x->sruntime);
+	else
+		sdw_stream_remove_slave(wsa884x->slave,
+					wsa884x->fb_sruntime[dai->id - WSA884X_DAI_VI]);
 
 	return 0;
 }
@@ -1894,6 +2005,19 @@ static int wsa884x_hw_free(struct snd_pcm_substream *substream,
 static int wsa884x_mute_stream(struct snd_soc_dai *dai, int mute, int stream)
 {
 	struct snd_soc_component *component = dai->component;
+	struct wsa884x_priv *wsa884x = snd_soc_component_get_drvdata(component);
+
+	/*
+	 * This is the one place that enables the power amplifier, and every
+	 * path ends here: prepare, trigger start, resume and pause release
+	 * (mute_unmute_on_trigger). Ask the guard each time, so that a fault,
+	 * a lost V/I stream or a missing calibration cannot be undone from
+	 * user space. When it refuses, the amplifier stays muted and the
+	 * stream keeps running silently until it is stopped or paused and
+	 * released again.
+	 */
+	if (!mute && wsa884x->guarded && sp11_guard_unmute_check(dai->dev))
+		mute = 1;
 
 	if (mute) {
 		snd_soc_component_write_field(component, WSA884X_DRE_CTL_1,
@@ -1920,10 +2044,19 @@ static int wsa884x_set_stream(struct snd_soc_dai *dai,
 {
 	struct wsa884x_priv *wsa884x = dev_get_drvdata(dai->dev);
 
-	wsa884x->sruntime = stream;
+	if (dai->id == WSA884X_DAI_SPKR)
+		wsa884x->sruntime = stream;
+	else
+		wsa884x->fb_sruntime[dai->id - WSA884X_DAI_VI] = stream;
 
 	return 0;
 }
+
+static const struct snd_soc_dai_ops wsa884x_fb_dai_ops = {
+	.hw_params = wsa884x_fb_hw_params,
+	.hw_free = wsa884x_hw_free,
+	.set_stream = wsa884x_set_stream,
+};
 
 static const struct snd_soc_dai_ops wsa884x_dai_ops = {
 	.hw_params = wsa884x_hw_params,
@@ -1935,6 +2068,7 @@ static const struct snd_soc_dai_ops wsa884x_dai_ops = {
 
 static struct snd_soc_dai_driver wsa884x_dais[] = {
 	{
+		.id = WSA884X_DAI_SPKR,
 		.name = "SPKR",
 		.playback = {
 			.stream_name = "SPKR Playback",
@@ -1946,6 +2080,34 @@ static struct snd_soc_dai_driver wsa884x_dais[] = {
 			.channels_max = 1,
 		},
 		.ops = &wsa884x_dai_ops,
+	},
+	{
+		.id = WSA884X_DAI_VI,
+		.name = "VI",
+		.capture = {
+			.stream_name = "VI Capture",
+			.rates = WSA884X_RATES | WSA884X_FRAC_RATES,
+			.formats = WSA884X_FORMATS,
+			.rate_min = 8000,
+			.rate_max = 384000,
+			.channels_min = 1,
+			.channels_max = 2,
+		},
+		.ops = &wsa884x_fb_dai_ops,
+	},
+	{
+		.id = WSA884X_DAI_CPS,
+		.name = "CPS",
+		.capture = {
+			.stream_name = "CPS Capture",
+			.rates = WSA884X_RATES | WSA884X_FRAC_RATES,
+			.formats = WSA884X_FORMATS,
+			.rate_min = 8000,
+			.rate_max = 384000,
+			.channels_min = 1,
+			.channels_max = 1,
+		},
+		.ops = &wsa884x_fb_dai_ops,
 	},
 };
 
@@ -2178,6 +2340,7 @@ static int wsa884x_probe(struct sdw_slave *pdev,
 	device_property_read_u32(dev, "qcom,vsense-attenuation-db", &wsa884x->vsense_atten_db);
 	device_property_read_u32(dev, "qcom,isense-gain-db", &wsa884x->isense_gain_db);
 	wsa884x->internal_boost = device_property_read_bool(dev, "qcom,internal-boost");
+	wsa884x->guarded = of_machine_is_compatible("microsoft,denali");
 	if (wsa884x->battery_cells < 1 || wsa884x->battery_cells > 2)
 		return dev_err_probe(dev, -EINVAL, "invalid qcom,battery-stack-cells\n");
 	wsa884x->sconfig.ch_count = 1;
@@ -2193,10 +2356,13 @@ static int wsa884x_probe(struct sdw_slave *pdev,
 					WSA884X_MAX_SWR_PORTS))
 		dev_dbg(dev, "Static Port mapping not specified\n");
 
-	pdev->prop.sink_ports = GENMASK(WSA884X_MAX_SWR_PORTS - 1, 0);
+	pdev->prop.sink_ports = GENMASK(WSA884X_PORT_PBR + 1, WSA884X_PORT_DAC + 1);
+	pdev->prop.source_ports = GENMASK(WSA884X_PORT_CPS + 1, WSA884X_PORT_VISENSE + 1);
 	pdev->prop.simple_clk_stop_capable = true;
 	pdev->prop.sink_dpn_prop = wsa884x_sink_dpn_prop;
-	pdev->prop.scp_int1_mask = SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY;
+	pdev->prop.src_dpn_prop = wsa884x_src_dpn_prop;
+	pdev->prop.scp_int1_mask = SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY |
+				   SDW_SCP_INT1_IMPL_DEF;
 
 	wsa884x_reset_deassert(wsa884x);
 	ret = devm_add_action_or_reset(dev, wsa884x_reset_powerdown, wsa884x);
@@ -2257,6 +2423,8 @@ static int wsa884x_runtime_resume(struct device *dev)
 		regcache_mark_dirty(regmap);
 		return ret;
 	}
+
+	wsa884x_guard_hold(dev_get_drvdata(dev));
 
 	return 0;
 }

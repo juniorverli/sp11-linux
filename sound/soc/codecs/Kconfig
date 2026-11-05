@@ -2781,6 +2781,8 @@ config SND_SOC_WSA883X
 config SND_SOC_WSA884X
 	tristate "WSA884X Codec"
 	depends on SOUNDWIRE
+	# The Surface Pro 11 speaker protection guard must not be a module for a built-in driver
+	depends on SND_SOC_SP11_GUARD || !SND_SOC_SP11_GUARD
 	select REGMAP_SOUNDWIRE
 	help
 	  This enables support for Qualcomm WSA8840/WSA8845/WSA8845H Class-D
