@@ -1653,8 +1653,12 @@ int audioreach_set_media_format(struct q6apm_graph *graph,
 							   PARAM_ID_SP_OP_MODE_NORMAL);
 		if (!rc)
 			rc = audioreach_module_enable(graph, module, true);
-		if (!rc)
+		if (!rc) {
 			rc = audioreach_sp11_register_events(graph, module);
+			if (rc)
+				dev_err(graph->dev, "SP diagnostics event registration failed: %d\n",
+					rc);
+		}
 
 		break;
 	case MODULE_ID_SPEAKER_PROTECTION_VI:
