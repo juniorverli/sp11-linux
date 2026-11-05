@@ -15,6 +15,7 @@
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/pcm.h>
+#include <sound/sp11-guard.h>
 #include "audioreach.h"
 #include "q6apm.h"
 
@@ -446,8 +447,11 @@ int q6apm_graph_media_format_pcm(struct q6apm_graph *graph, struct audioreach_mo
 	struct audioreach_sub_graph *sgs;
 	struct audioreach_container *container;
 	struct audioreach_module *module;
+	bool vi = q6apm_find_module_by_mid(graph, MODULE_ID_SPEAKER_PROTECTION_VI);
 	int ret;
 
+	if (vi)
+		sp11_guard_calibration_reset();
 	list_for_each_entry(sgs, &info->sg_list, node) {
 		list_for_each_entry(container, &sgs->container_list, node) {
 			list_for_each_entry(module, &container->modules_list, node) {
@@ -458,8 +462,11 @@ int q6apm_graph_media_format_pcm(struct q6apm_graph *graph, struct audioreach_mo
 					continue;
 
 				ret = audioreach_set_media_format(graph, module, cfg);
-				if (ret)
+				if (ret) {
+					if (vi)
+						sp11_guard_calibration_reset();
 					return ret;
+				}
 			}
 		}
 	}
@@ -788,6 +795,8 @@ int q6apm_graph_close(struct q6apm_graph *graph)
 {
 	struct audioreach_graph *ar_graph = graph->ar_graph;
 
+	if (q6apm_find_module_by_mid(graph, MODULE_ID_SPEAKER_PROTECTION_VI))
+		sp11_guard_vi_closed(ar_graph);
 	graph->ar_graph = NULL;
 	kref_put(&ar_graph->refcount, q6apm_put_audioreach_graph);
 	gpr_free_port(graph->port);
@@ -799,7 +808,12 @@ EXPORT_SYMBOL_GPL(q6apm_graph_close);
 
 int q6apm_graph_prepare(struct q6apm_graph *graph)
 {
-	return audioreach_graph_mgmt_cmd(graph->ar_graph, APM_CMD_GRAPH_PREPARE);
+	int ret = audioreach_graph_mgmt_cmd(graph->ar_graph, APM_CMD_GRAPH_PREPARE);
+
+	if (ret && q6apm_find_module_by_mid(graph, MODULE_ID_SPEAKER_PROTECTION_VI))
+		sp11_guard_calibration_reset();
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(q6apm_graph_prepare);
 
@@ -810,8 +824,11 @@ int q6apm_graph_start(struct q6apm_graph *graph)
 
 	if (ar_graph->start_count == 0) {
 		ret = audioreach_graph_mgmt_cmd(ar_graph, APM_CMD_GRAPH_START);
-		if (ret)
+		if (ret) {
+			if (q6apm_find_module_by_mid(graph, MODULE_ID_SPEAKER_PROTECTION_VI))
+				sp11_guard_calibration_reset();
 			return ret;
+		}
 
 		/* Once per run, like the stop below: the guard counts streams */
 		audioreach_sp11_graph_state(graph, true);

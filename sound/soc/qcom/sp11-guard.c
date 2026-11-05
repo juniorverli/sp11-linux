@@ -56,6 +56,10 @@ struct sp11_guard {
 	unsigned int streams[SP11_STREAM_MAX];
 	unsigned int cal_mask;
 	bool cal_nominal;
+	const void *cal_graph;
+	const void *vi_graph;
+	u64 cal_generation;
+	bool vi_ambiguous;
 	bool loaded;
 	bool graph_up;
 	bool cps_required;
@@ -129,6 +133,12 @@ static const char *sp11_guard_open_reason(void)
 	return NULL;
 }
 
+/* The graph identities are compared only; the guard never dereferences them. */
+static bool sp11_guard_cal_matches_vi(void)
+{
+	return !guard.vi_ambiguous && guard.vi_graph && guard.vi_graph == guard.cal_graph;
+}
+
 /* Reason the amplifier may not be unmuted, NULL when it may. Called with guard.lock held. */
 static bool sp11_guard_degraded_fault(void);
 
@@ -152,6 +162,8 @@ static const char *sp11_guard_reason(void)
 		return "the V/I sense stream is not running";
 	if (guard.cps_required && !guard.streams[SP11_STREAM_CPS])
 		return "the CPS stream is not running";
+	if (!sp11_guard_cal_matches_vi())
+		return "calibration does not match the running V/I graph";
 	if ((guard.cal_mask & SP11_CAL_ALL_MASK) != SP11_CAL_ALL_MASK)
 		return "no R0/T0 calibration was applied";
 	if (guard.cal_nominal && !allow_nominal)
@@ -215,7 +227,16 @@ void sp11_guard_graph(bool up, bool cps_required)
 }
 EXPORT_SYMBOL_GPL(sp11_guard_graph);
 
-void sp11_guard_stream(enum sp11_guard_stream stream, bool start)
+/* Called with guard.lock held. Also invalidates an in-flight SET_CFG. */
+static void sp11_guard_calibration_reset_locked(void)
+{
+	guard.cal_mask = 0;
+	guard.cal_nominal = false;
+	guard.cal_graph = NULL;
+	guard.cal_generation++;
+}
+
+void sp11_guard_stream(enum sp11_guard_stream stream, bool start, const void *graph)
 {
 	unsigned long flags;
 	bool was_allowed;
@@ -226,26 +247,90 @@ void sp11_guard_stream(enum sp11_guard_stream stream, bool start)
 	spin_lock_irqsave(&guard.lock, flags);
 	was_allowed = !sp11_guard_reason();
 	if (start) {
+		if (stream == SP11_STREAM_VI) {
+			if (!guard.streams[stream])
+				guard.vi_graph = graph;
+			else if (guard.vi_graph != graph)
+				guard.vi_ambiguous = true;
+			if (!graph)
+				guard.vi_ambiguous = true;
+		}
 		guard.streams[stream]++;
-	} else if (guard.streams[stream] && !--guard.streams[stream] &&
-		   stream == SP11_STREAM_VI) {
-		/* The calibration lives in the V/I module of the graph that just stopped */
-		guard.cal_mask = 0;
-		guard.cal_nominal = false;
+	} else if (guard.streams[stream]) {
+		if (stream == SP11_STREAM_VI && guard.vi_graph != graph)
+			guard.vi_ambiguous = true;
+		if (!--guard.streams[stream] && stream == SP11_STREAM_VI) {
+			guard.vi_graph = NULL;
+			guard.vi_ambiguous = false;
+			sp11_guard_calibration_reset_locked();
+		}
 	}
 	sp11_guard_mute_if_refused(was_allowed);
 	spin_unlock_irqrestore(&guard.lock, flags);
 }
 EXPORT_SYMBOL_GPL(sp11_guard_stream);
 
-void sp11_guard_calibrated(unsigned int ch_mask, bool nominal)
+void sp11_guard_calibration_reset(void)
 {
 	unsigned long flags;
+	bool was_allowed;
 
 	spin_lock_irqsave(&guard.lock, flags);
-	guard.cal_mask |= ch_mask & SP11_CAL_ALL_MASK;
-	guard.cal_nominal = nominal;
+	was_allowed = !sp11_guard_reason();
+	sp11_guard_calibration_reset_locked();
+	sp11_guard_mute_if_refused(was_allowed);
 	spin_unlock_irqrestore(&guard.lock, flags);
+}
+EXPORT_SYMBOL_GPL(sp11_guard_calibration_reset);
+
+void sp11_guard_vi_closed(const void *graph)
+{
+	unsigned long flags;
+	bool was_allowed;
+
+	spin_lock_irqsave(&guard.lock, flags);
+	was_allowed = !sp11_guard_reason();
+	/* A close without a matching stop must not leave a usable graph identity. */
+	if (guard.streams[SP11_STREAM_VI] && guard.vi_graph == graph)
+		guard.vi_ambiguous = true;
+	sp11_guard_calibration_reset_locked();
+	sp11_guard_mute_if_refused(was_allowed);
+	spin_unlock_irqrestore(&guard.lock, flags);
+}
+EXPORT_SYMBOL_GPL(sp11_guard_vi_closed);
+
+u64 sp11_guard_calibration_begin(const void *graph)
+{
+	unsigned long flags;
+	bool was_allowed;
+	u64 generation;
+
+	spin_lock_irqsave(&guard.lock, flags);
+	was_allowed = !sp11_guard_reason();
+	sp11_guard_calibration_reset_locked();
+	guard.cal_graph = graph;
+	generation = guard.cal_generation;
+	sp11_guard_mute_if_refused(was_allowed);
+	spin_unlock_irqrestore(&guard.lock, flags);
+
+	return generation;
+}
+EXPORT_SYMBOL_GPL(sp11_guard_calibration_begin);
+
+bool sp11_guard_calibrated(u64 generation, unsigned int ch_mask, bool nominal)
+{
+	unsigned long flags;
+	bool accepted;
+
+	spin_lock_irqsave(&guard.lock, flags);
+	accepted = guard.cal_graph && guard.cal_generation == generation;
+	if (accepted) {
+		guard.cal_mask |= ch_mask & SP11_CAL_ALL_MASK;
+		guard.cal_nominal = nominal;
+	}
+	spin_unlock_irqrestore(&guard.lock, flags);
+
+	return accepted;
 }
 EXPORT_SYMBOL_GPL(sp11_guard_calibrated);
 
@@ -377,7 +462,7 @@ static bool sp11_guard_degraded_fault(void)
 {
 	return guard.diagnostics_degraded &&
 	       (!guard.loaded || !guard.graph_up || !guard.sp_enabled ||
-		!guard.streams[SP11_STREAM_VI] ||
+		!guard.streams[SP11_STREAM_VI] || !sp11_guard_cal_matches_vi() ||
 		(guard.cps_required && !guard.streams[SP11_STREAM_CPS]) ||
 		((guard.cal_mask & SP11_CAL_ALL_MASK) != SP11_CAL_ALL_MASK) ||
 		guard.cal_nominal);

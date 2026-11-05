@@ -103,6 +103,8 @@ struct sp11cl {
  */
 static struct sp11cl *sp11cl;
 static DEFINE_MUTEX(sp11cl_lock);
+/* Serialize VI record and R0/T0 sends across graph preparation attempts. */
+static DEFINE_MUTEX(sp11_vi_cal_lock);
 
 static void sp11cl_free(struct kref *ref)
 {
@@ -346,12 +348,15 @@ static int sp11_apply_r0t0(struct q6apm_graph *graph, const struct audioreach_mo
 	} __packed cfg = { };
 	bool nominal;
 	u32 crc, i;
+	u64 generation;
 	int ret;
 
+	generation = sp11_guard_calibration_begin(graph->ar_graph);
 	ret = firmware_request_nowarn(&fw, cl->cal_name, graph->dev);
 	if (ret) {
 		dev_warn(graph->dev, "no speaker calibration (%s), speakers stay muted\n",
 			 cl->cal_name);
+		sp11_guard_calibration_reset();
 		return 0;
 	}
 
@@ -396,10 +401,16 @@ static int sp11_apply_r0t0(struct q6apm_graph *graph, const struct audioreach_mo
 	}
 
 	nominal = le32_to_cpu(hdr->flags) & SP11CAL_FLAG_NOMINAL;
-	sp11_guard_calibrated(SP11_CAL_ALL_MASK, nominal);
+	if (!sp11_guard_calibrated(generation, SP11_CAL_ALL_MASK, nominal)) {
+		dev_warn(graph->dev, "speaker calibration was invalidated during setup\n");
+		ret = -ECANCELED;
+		goto out;
+	}
 	dev_info(graph->dev, "speaker calibration applied (%s)\n",
 		 nominal ? "nominal" : "measured");
 out:
+	if (ret)
+		sp11_guard_calibration_reset();
 	release_firmware(fw);
 
 	return ret;
@@ -409,12 +420,19 @@ out:
 int audioreach_sp11_graph_params(struct q6apm_graph *graph,
 				 const struct audioreach_module *module)
 {
-	struct sp11cl *cl = sp11cl_get();
+	bool vi = module->module_id == MODULE_ID_SPEAKER_PROTECTION_VI;
+	struct sp11cl *cl;
 	u32 off = 0, i;
 	int ret = 0;
 
+	if (vi) {
+		mutex_lock(&sp11_vi_cal_lock);
+		/* Records can fail before sp11_apply_r0t0() is reached. */
+		sp11_guard_calibration_reset();
+	}
+	cl = sp11cl_get();
 	if (!cl)
-		return 0;
+		goto out;
 
 	for (i = 0; i < cl->n_cal; i++) {
 		const struct sp11cl_cal_rec *rec = (const void *)(cl->cal + off);
@@ -433,9 +451,14 @@ int audioreach_sp11_graph_params(struct q6apm_graph *graph,
 		}
 	}
 
-	if (!ret && module->module_id == MODULE_ID_SPEAKER_PROTECTION_VI)
+	if (!ret && vi)
 		ret = sp11_apply_r0t0(graph, module, cl);
+	if (ret && vi)
+		sp11_guard_calibration_reset();
 	sp11cl_put(cl);
+out:
+	if (vi)
+		mutex_unlock(&sp11_vi_cal_lock);
 
 	return ret;
 }
@@ -499,7 +522,7 @@ void audioreach_sp11_graph_state(struct q6apm_graph *graph, bool started)
 		sp11_guard_diagnostics_degraded(false);
 	}
 	if (q6apm_find_module_by_mid(graph, MODULE_ID_SPEAKER_PROTECTION_VI))
-		sp11_guard_stream(SP11_STREAM_VI, started);
+		sp11_guard_stream(SP11_STREAM_VI, started, graph->ar_graph);
 	if (q6apm_find_module_by_mid(graph, MODULE_ID_CPS_DATA_ROUTER))
-		sp11_guard_stream(SP11_STREAM_CPS, started);
+		sp11_guard_stream(SP11_STREAM_CPS, started, graph->ar_graph);
 }

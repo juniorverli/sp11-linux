@@ -43,8 +43,11 @@ int sp11_guard_select_mode(bool marker_valid, bool has_sp);
 void sp11_guard_caps_ready(bool ready);
 void sp11_guard_loaded(bool loaded);
 void sp11_guard_graph(bool up, bool cps_required);
-void sp11_guard_stream(enum sp11_guard_stream stream, bool start);
-void sp11_guard_calibrated(unsigned int ch_mask, bool nominal);
+void sp11_guard_stream(enum sp11_guard_stream stream, bool start, const void *graph);
+void sp11_guard_calibration_reset(void);
+void sp11_guard_vi_closed(const void *graph);
+u64 sp11_guard_calibration_begin(const void *graph);
+bool sp11_guard_calibrated(u64 generation, unsigned int ch_mask, bool nominal);
 void sp11_guard_sp_enabled(bool enabled);
 void sp11_guard_diagnostics_degraded(bool degraded);
 void sp11_guard_fault(const char *src, u32 code);
@@ -61,8 +64,15 @@ static inline int sp11_guard_select_mode(bool marker_valid, bool has_sp) { retur
 static inline void sp11_guard_caps_ready(bool ready) { }
 static inline void sp11_guard_loaded(bool loaded) { }
 static inline void sp11_guard_graph(bool up, bool cps_required) { }
-static inline void sp11_guard_stream(enum sp11_guard_stream stream, bool start) { }
-static inline void sp11_guard_calibrated(unsigned int ch_mask, bool nominal) { }
+static inline void sp11_guard_stream(enum sp11_guard_stream stream, bool start,
+				     const void *graph) { }
+static inline void sp11_guard_calibration_reset(void) { }
+static inline void sp11_guard_vi_closed(const void *graph) { }
+static inline u64 sp11_guard_calibration_begin(const void *graph) { return 0; }
+static inline bool sp11_guard_calibrated(u64 generation, unsigned int ch_mask, bool nominal)
+{
+	return true;
+}
 static inline void sp11_guard_sp_enabled(bool enabled) { }
 static inline void sp11_guard_diagnostics_degraded(bool degraded) { }
 static inline void sp11_guard_fault(const char *src, u32 code) { }
