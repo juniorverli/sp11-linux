@@ -322,6 +322,7 @@ static int sp11_send_param(struct q6apm_graph *graph, u32 iid, u32 param_id,
 {
 	struct apm_module_param_data *param_data;
 	int payload_size = APM_MODULE_PARAM_DATA_SIZE + ALIGN(size, 8);
+	int ret;
 	void *p;
 
 	struct gpr_pkt *pkt __free(kfree) =
@@ -337,7 +338,10 @@ static int sp11_send_param(struct q6apm_graph *graph, u32 iid, u32 param_id,
 	param_data->param_size = size;
 	memcpy(p + APM_MODULE_PARAM_DATA_SIZE, data, size);
 
-	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
+	ret = q6apm_send_cmd_sync(graph->apm, pkt, 0);
+	dev_info(graph->dev, "sp11: graph %u SET_CFG iid=0x%x param=0x%08x size=%u rc=%d\n",
+		 graph->id, iid, param_id, size, ret);
+	return ret;
 }
 
 /* Apply the per-unit R0/T0 to the VI module, returns 0 and leaves the guard closed if absent */
@@ -423,7 +427,7 @@ static int sp11_apply_r0t0(struct q6apm_graph *graph, const struct audioreach_mo
 		goto out;
 	}
 	dev_info(graph->dev, "speaker calibration applied (%s)\n",
-		 nominal ? "nominal" : "measured");
+		 nominal ? "nominal" : "non-nominal");
 out:
 	if (ret)
 		sp11_guard_calibration_reset();

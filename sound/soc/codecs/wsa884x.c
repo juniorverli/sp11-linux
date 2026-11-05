@@ -1966,12 +1966,40 @@ static int wsa884x_hw_params(struct snd_pcm_substream *substream,
 				    wsa884x->sruntime);
 }
 
+/* A direct register read, never a cached value or a reason to resume the device. */
+static void wsa884x_log_pa_enable(struct wsa884x_priv *wsa884x, const char *stage)
+{
+	unsigned int value;
+	int ret;
+
+	if (!wsa884x->guarded)
+		return;
+	if (!READ_ONCE(wsa884x->hw_init)) {
+		dev_info(wsa884x->dev, "feedback %s PA enable unknown: device not attached\n",
+			 stage);
+		return;
+	}
+	ret = pm_runtime_get_if_in_use(wsa884x->dev);
+	if (ret <= 0) {
+		dev_info(wsa884x->dev, "feedback %s PA enable unknown: runtime=%d\n",
+			 stage, ret);
+		return;
+	}
+	ret = regmap_read_bypassed(wsa884x->regmap, WSA884X_PA_FSM_EN, &value);
+	pm_runtime_put(wsa884x->dev);
+	if (ret)
+		dev_info(wsa884x->dev, "feedback %s PA enable read failed: %d\n", stage, ret);
+	else
+		dev_info(wsa884x->dev, "feedback %s PA global enable=%u (register)\n",
+			 stage, !!(value & WSA884X_PA_FSM_EN_GLOBAL_PA_EN_MASK));
+}
+
 static int wsa884x_fb_hw_params(struct snd_pcm_substream *substream,
 				struct snd_pcm_hw_params *params,
 				struct snd_soc_dai *dai)
 {
 	struct wsa884x_priv *wsa884x = dev_get_drvdata(dai->dev);
-	int idx = dai->id - WSA884X_DAI_VI;
+	int ret, idx = dai->id - WSA884X_DAI_VI;
 	int port = dai->id == WSA884X_DAI_VI ? WSA884X_PORT_VISENSE : WSA884X_PORT_CPS;
 
 	wsa884x->fb_pconfig[idx] = wsa884x_pconfig[port];
@@ -1984,8 +2012,14 @@ static int wsa884x_fb_hw_params(struct snd_pcm_substream *substream,
 	wsa884x->fb_sconfig[idx].type = SDW_STREAM_PDM;
 	wsa884x->fb_sconfig[idx].direction = SDW_DATA_DIR_TX;
 
-	return sdw_stream_add_slave(wsa884x->slave, &wsa884x->fb_sconfig[idx],
-				    &wsa884x->fb_pconfig[idx], 1, wsa884x->fb_sruntime[idx]);
+	wsa884x_log_pa_enable(wsa884x, "before-add");
+	ret = sdw_stream_add_slave(wsa884x->slave, &wsa884x->fb_sconfig[idx],
+				   &wsa884x->fb_pconfig[idx], 1, wsa884x->fb_sruntime[idx]);
+	dev_info(dai->dev, "feedback %s port=%u mask=0x%x channels=%u rate=%u rc=%d\n",
+		 dai->id == WSA884X_DAI_VI ? "VI" : "CPS", wsa884x->fb_pconfig[idx].num,
+		 wsa884x->fb_pconfig[idx].ch_mask, wsa884x->fb_sconfig[idx].ch_count,
+		 wsa884x->fb_sconfig[idx].frame_rate, ret);
+	return ret;
 }
 
 static int wsa884x_hw_free(struct snd_pcm_substream *substream,
@@ -1993,11 +2027,13 @@ static int wsa884x_hw_free(struct snd_pcm_substream *substream,
 {
 	struct wsa884x_priv *wsa884x = dev_get_drvdata(dai->dev);
 
-	if (dai->id == WSA884X_DAI_SPKR)
+	if (dai->id == WSA884X_DAI_SPKR) {
 		sdw_stream_remove_slave(wsa884x->slave, wsa884x->sruntime);
-	else
+	} else {
+		wsa884x_log_pa_enable(wsa884x, "before-free");
 		sdw_stream_remove_slave(wsa884x->slave,
 					wsa884x->fb_sruntime[dai->id - WSA884X_DAI_VI]);
+	}
 
 	return 0;
 }
