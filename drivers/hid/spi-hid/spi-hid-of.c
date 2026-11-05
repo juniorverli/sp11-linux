@@ -37,6 +37,7 @@ struct spi_hid_of_data {
 	struct spi_hid_conf conf;
 	u32 post_power_on_delay_ms;
 	u32 minimal_reset_delay_ms;
+	u32 pre_power_off_delay_ms;
 };
 
 /* Config structure is filled with match data and Device Tree resources */
@@ -60,6 +61,22 @@ static const struct spi_hid_of_data microsoft_g6_data = {
 	},
 	.post_power_on_delay_ms = 10,
 	.minimal_reset_delay_ms = 100,
+};
+
+/* Cold power-on wait is provided by the board's fixed regulator. */
+static const struct spi_hid_of_data microsoft_mshw0484_data = {
+	.conf = {
+		.input_report_header_address = 0x1000,
+		.input_report_body_address = 0x1004,
+		.output_report_address = 0x2000,
+		.read_opcode = 0xeb,
+		.write_opcode = 0xe2,
+		.qspi_read = true,
+		.rebind_after_reset = true,
+	},
+	.post_power_on_delay_ms = 10,
+	.minimal_reset_delay_ms = 300,
+	.pre_power_off_delay_ms = 10,
 };
 
 static int spi_hid_of_populate_config(struct spi_hid_of_config *conf,
@@ -88,6 +105,14 @@ static int spi_hid_of_power_down(struct spihid_ops *ops)
 
 	if (!conf->supply_enabled)
 		return 0;
+
+	if (conf->data.pre_power_off_delay_ms) {
+		error = gpiod_set_value_cansleep(conf->reset_gpio, 1);
+		if (error)
+			return error;
+
+		fsleep(1000 * conf->data.pre_power_off_delay_ms);
+	}
 
 	error = regulator_disable(conf->supply);
 	if (error == 0)
@@ -167,10 +192,7 @@ static int spi_hid_of_probe(struct spi_device *spi)
 
 	config->data = *data;
 
-	/*
-	 * FIXME: multi-SPI not supported. Once it is, derive the
-	 * HID-over-SPI flags from spi->mode.
-	 */
+	/* The MSHW0484 match uses the downstream GENI QSPI convention. */
 
 	error = spi_hid_of_populate_config(config, dev);
 	if (error)
@@ -180,12 +202,14 @@ static int spi_hid_of_probe(struct spi_device *spi)
 }
 
 static const struct of_device_id spi_hid_of_match[] = {
+	{ .compatible = "microsoft,mshw0484", .data = &microsoft_mshw0484_data },
 	{ .compatible = "microsoft,g6-touch-digitizer", .data = &microsoft_g6_data },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, spi_hid_of_match);
 
 static const struct spi_device_id spi_hid_of_id_table[] = {
+	{ .name = "mshw0484", .driver_data = (kernel_ulong_t)&microsoft_mshw0484_data },
 	{ .name = "g6-touch-digitizer", .driver_data = (kernel_ulong_t)&microsoft_g6_data },
 	{ }
 };

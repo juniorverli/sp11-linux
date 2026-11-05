@@ -199,16 +199,27 @@ static int spi_hid_input_sync(struct spi_hid *shid, void *buf, u16 length,
 					 shid->read_approval_header :
 					 shid->read_approval_body;
 	shid->input_transfer[0].len = SPI_HID_READ_APPROVAL_LEN;
+	shid->input_transfer[0].rx_buf = NULL;
 
 	shid->input_transfer[1].rx_buf = buf;
 	shid->input_transfer[1].len = length;
 
+	if (shid->conf->qspi_read) {
+		/* GENI emits opcode/address, eight dummy clocks, then RX data. */
+		memcpy(shid->input_tx, shid->input_transfer[0].tx_buf,
+		       SPI_HID_READ_APPROVAL_LEN - 1);
+		shid->input_transfer[0].tx_buf = shid->input_tx;
+		shid->input_transfer[0].rx_buf = buf;
+		shid->input_transfer[0].len = length;
+	}
+
 	spi_message_init_with_transfers(&shid->input_message,
-					shid->input_transfer, 2);
+					shid->input_transfer,
+					shid->conf->qspi_read ? 1 : 2);
 
 	/* rx_buf is not filled yet; received data is traced by *_complete. */
 	trace_spi_hid_input_sync(shid, shid->input_transfer[0].tx_buf,
-				 shid->input_transfer[0].len,
+				 SPI_HID_READ_APPROVAL_LEN - shid->conf->qspi_read,
 				 shid->input_transfer[1].rx_buf, 0, 0);
 
 	error = spi_sync(shid->spi, &shid->input_message);
@@ -255,7 +266,8 @@ static int spi_hid_wait_for_reset(struct spi_hid *shid)
 		return -ETIMEDOUT;
 	}
 
-	set_bit(SPI_HID_READY, &shid->flags);
+	if (!shid->conf->rebind_after_reset)
+		set_bit(SPI_HID_READY, &shid->flags);
 	return 0;
 }
 
@@ -372,6 +384,9 @@ static int spi_hid_resume(struct spi_hid *shid)
 			schedule_work(&shid->reset_work);
 			return -ETIMEDOUT;
 		}
+		/* The reset worker recreates HID and reconnects iptsd. */
+		if (was_reset && shid->conf->rebind_after_reset)
+			return 0;
 		/* HID requests would fail while the device is not ready. */
 		if (!test_bit(SPI_HID_READY, &shid->flags))
 			return 0;
@@ -859,8 +874,9 @@ static void spi_hid_refresh_device(struct spi_hid *shid)
 				     (size_t)error);
 	}
 
-	/* Same report descriptor, so no need to create a new hid device. */
-	if (new_crc32 == shid->report_descriptor_crc32) {
+	/* Reconnect hidraw clients if reset loses their selected mode. */
+	if (new_crc32 == shid->report_descriptor_crc32 &&
+	    !shid->conf->rebind_after_reset) {
 		shid->reset_attempts = 0;
 		set_bit(SPI_HID_READY, &shid->flags);
 		return;
@@ -1113,6 +1129,7 @@ static irqreturn_t spi_hid_dev_irq(int irq, void *_shid)
 	struct spi_hid *shid = _shid;
 	struct device *dev = &shid->spi->dev;
 	struct spi_hid_input_header header;
+	u8 approval_len = SPI_HID_READ_APPROVAL_LEN - shid->conf->qspi_read;
 	int error = 0;
 
 	trace_spi_hid_dev_irq(shid, irq);
@@ -1133,7 +1150,7 @@ static irqreturn_t spi_hid_dev_irq(int irq, void *_shid)
 
 		trace_spi_hid_input_header_complete(shid,
 						    shid->input_transfer[0].tx_buf,
-						    shid->input_transfer[0].len,
+						    approval_len,
 						    shid->input_transfer[1].rx_buf,
 						    shid->input_transfer[1].len,
 						    shid->input_message.status);
@@ -1166,7 +1183,7 @@ static irqreturn_t spi_hid_dev_irq(int irq, void *_shid)
 		}
 
 		trace_spi_hid_input_body_complete(shid, shid->input_transfer[0].tx_buf,
-						  shid->input_transfer[0].len,
+						  approval_len,
 						  shid->input_transfer[1].rx_buf,
 						  shid->input_transfer[1].len,
 						  shid->input_message.status);
@@ -1210,8 +1227,13 @@ static int spi_hid_alloc_buffers(struct spi_hid *shid, size_t report_size)
 		return -ENOMEM;
 	shid->response = tmp;
 
-	if (!shid->output || !shid->input || !shid->response)
-		return -ENOMEM;
+	if (shid->conf->qspi_read) {
+		tmp = devm_krealloc(dev, shid->input_tx, inbufsize,
+				    GFP_KERNEL | __GFP_ZERO);
+		if (!tmp)
+			return -ENOMEM;
+		shid->input_tx = tmp;
+	}
 
 	shid->bufsize = report_size;
 

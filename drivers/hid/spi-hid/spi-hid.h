@@ -17,6 +17,10 @@ struct spi_hid_conf {
 	u32 output_report_address;
 	u8 read_opcode;
 	u8 write_opcode;
+	/* GENI QSPI command-plus-response read convention. */
+	bool qspi_read;
+	/* Reset loses the heatmap mode selected by iptsd. */
+	bool rebind_after_reset;
 };
 
 /**

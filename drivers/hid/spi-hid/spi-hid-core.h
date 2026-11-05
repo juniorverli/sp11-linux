@@ -57,6 +57,7 @@ struct spi_hid {
 	struct spi_hid_output_buf *output;	/* Output buffer. */
 	struct spi_hid_input_buf *input;	/* Input buffer. */
 	struct spi_hid_input_buf *response;	/* Response buffer. */
+	u8		*input_tx;
 
 	struct drm_panel_follower panel_follower;
 	bool	is_panel_follower;
