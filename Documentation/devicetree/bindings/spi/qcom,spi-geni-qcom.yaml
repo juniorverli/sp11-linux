@@ -26,10 +26,20 @@ description:
 allOf:
   - $ref: /schemas/spi/spi-controller.yaml#
   - $ref: /schemas/soc/qcom/qcom,se-common-props.yaml#
+  - if:
+      properties:
+        compatible:
+          const: qcom,geni-spi-qspi
+    then:
+      required:
+        - dmas
+        - dma-names
 
 properties:
   compatible:
-    const: qcom,geni-spi
+    enum:
+      - qcom,geni-spi
+      - qcom,geni-spi-qspi
 
   clocks:
     maxItems: 1

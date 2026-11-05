@@ -27,6 +27,7 @@ properties:
   compatible:
     enum:
       - microsoft,g6-touch-digitizer
+      - microsoft,mshw0484
 
   reg:
     maxItems: 1
