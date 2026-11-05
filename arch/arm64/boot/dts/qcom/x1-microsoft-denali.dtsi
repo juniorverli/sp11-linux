@@ -4,10 +4,12 @@
  * Copyright (c) 2025 Dale Whinham <daleyo@gmail.com>
  */
 
+#include <dt-bindings/clock/qcom,x1e80100-camcc.h>
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/leds/common.h>
+#include <dt-bindings/media/video-interfaces.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 
 #include "hamoa-pmics.dtsi"
@@ -734,6 +736,99 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
+
+	regulators-8 {
+		compatible = "qcom,pm8010-rpmh-regulators";
+		qcom,pmic-id = "m";
+		status = "disabled";
+
+		vreg_l1m_1p2: ldo1 {
+			regulator-name = "vreg_l1m_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l5m_2p8: ldo5 {
+			regulator-name = "vreg_l5m_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l6m_1p8: ldo6 {
+			regulator-name = "vreg_l6m_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+};
+
+&camss {
+	vdd-csiphy-0p8-supply = <&vreg_l2c_0p8>;
+	vdd-csiphy-1p2-supply = <&vreg_l1c_1p2>;
+
+	ports {
+		/* CSIPHY1, rear OV13858 */
+		port@1 {
+			reg = <1>;
+
+			camss_csiphy1_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&rear_camera_ep>;
+			};
+		};
+	};
+};
+
+&cci0 {
+	pinctrl-0 = <&cci0_i2c1_default>;
+	pinctrl-names = "default";
+};
+
+&cci0_i2c1 {
+	/* Rear camera bus, GPIO103 (SDA) and GPIO104 (SCL) */
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	rear_camera: camera@10 {
+		compatible = "ovti,ov13858";
+		reg = <0x10>;
+
+		clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 110 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&cam_mclk1_default>, <&cam_rear_rst_n>;
+		pinctrl-names = "default";
+
+		dovdd-supply = <&vreg_l6m_1p8>;
+		dvdd-supply = <&vreg_l1m_1p2>;
+		avdd-supply = <&vreg_l5m_2p8>;
+
+		orientation = <1>;
+
+		/*
+		 * The only camera indicator known on this unit is GPIO225. Light it
+		 * whenever the rear sensor streams until the rear indicator, if
+		 * any, is identified.
+		 */
+		leds = <&camera_indicator>;
+		led-names = "privacy";
+
+		port {
+			rear_camera_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <270000000 540000000>;
+				remote-endpoint = <&camss_csiphy1_ep>;
+			};
+		};
+	};
 };
 
 &gpu {
@@ -1257,6 +1352,27 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
+	};
+
+	cam_mclk1_default: cam-mclk1-state {
+		pins = "gpio97";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_rear_rst_n: cam-rear-reset-n-state {
+		pins = "gpio110";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cci0_i2c1_default: cci0-i2c1-state {
+		pins = "gpio103", "gpio104";
+		function = "cci_i2c";
+		drive-strength = <2>;
+		bias-pull-up;
 	};
 };
 
