@@ -11,11 +11,13 @@
  * @SPI_TX: SPI peripheral TX command
  * @SPI_RX: SPI peripheral RX command
  * @SPI_DUPLEX: SPI peripheral Duplex command
+ * @QSPI_TX_RX: QSPI command followed by receive data
  */
 enum spi_transfer_cmd {
 	SPI_TX = 1,
 	SPI_RX,
 	SPI_DUPLEX,
+	QSPI_TX_RX = 7,	/* QSPI full-duplex (TX opcode+addr, RX data) */
 };
 
 /**
@@ -33,6 +35,10 @@ enum spi_transfer_cmd {
  * @cs: chip select toggle
  * @set_config: set peripheral config
  * @rx_len: receive length for buffer
+ * @qspi_mode: QSPI personality selected
+ * @qspi_lane_flags: QSPI lane mode
+ * @dummy_clk_cnt: dummy clock count before receive data
+ * @tx_cmd_len: number of command bytes before receive data
  */
 struct gpi_spi_config {
 	u8 set_config;
@@ -47,6 +53,11 @@ struct gpi_spi_config {
 	u32 clk_src;
 	enum spi_transfer_cmd cmd;
 	u32 rx_len;
+	/* QSPI extensions */
+	bool qspi_mode;
+	u16 qspi_lane_flags;
+	u8 dummy_clk_cnt;
+	u16 tx_cmd_len;
 };
 
 enum i2c_op {
