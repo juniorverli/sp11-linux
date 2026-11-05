@@ -8,6 +8,14 @@
 #include "hamoa.dtsi"
 #include "x1-microsoft-denali.dtsi"
 
+&{/sound} {
+	status = "disabled";
+};
+
+&swr0 {
+	status = "disabled";
+};
+
 / {
 	model = "Microsoft Surface Pro 11th Edition (LCD)";
 	compatible = "microsoft,denali-lcd", "microsoft,denali",
