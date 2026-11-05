@@ -497,6 +497,18 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		/*
+		 * Front IMX681 analog rail (B-LDO7, 2.8 V in the Windows data).
+		 * Disabled with the front camera.
+		 */
+		vreg_l7b_2p8: ldo7 {
+			regulator-name = "vreg_l7b_2p8";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			status = "disabled";
+		};
+
 		vreg_l8b_3p0: ldo8 {
 			regulator-name = "vreg_l8b_3p0";
 			regulator-min-microvolt = <3072000>;
@@ -544,6 +556,19 @@
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * Rear camera actuator rail (B-LDO16, 2.9 V in the Windows data).
+		 * Nothing consumes it: the lens driver and the actuator node are
+		 * not described yet.
+		 */
+		vreg_l16b_2p9: ldo16 {
+			regulator-name = "vreg_l16b_2p9";
+			regulator-min-microvolt = <2900000>;
+			regulator-max-microvolt = <2900000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			status = "disabled";
 		};
 
 		vreg_l17b_2p5: ldo17 {
@@ -758,6 +783,13 @@
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		vreg_l3m_1p8: ldo3 {
+			regulator-name = "vreg_l3m_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
 		vreg_l5m_2p8: ldo5 {
 			regulator-name = "vreg_l5m_2p8";
 			regulator-min-microvolt = <2800000>;
@@ -787,6 +819,17 @@
 				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
 				data-lanes = <0 1 2 3>;
 				remote-endpoint = <&rear_camera_ep>;
+			};
+		};
+
+		/* CSIPHY2, front IMX681 over C-PHY, one trio */
+		port@2 {
+			reg = <2>;
+
+			camss_csiphy2_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				data-lanes = <0>;
+				remote-endpoint = <&front_camera_ep>;
 			};
 		};
 	};
@@ -841,6 +884,58 @@
 				data-lanes = <1 2 3 4>;
 				link-frequencies = /bits/ 64 <270000000 540000000 592800000>;
 				remote-endpoint = <&camss_csiphy1_ep>;
+			};
+		};
+	};
+};
+
+&cci1 {
+	pinctrl-0 = <&cci1_i2c1_default>;
+	pinctrl-names = "default";
+};
+
+&cci1_i2c1 {
+	/* Front camera bus on the always-on CCI, GPIO235 (SDA) and GPIO236 (SCL) */
+	clock-frequency = <400000>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	front_camera: camera@10 {
+		compatible = "sony,imx681";
+		reg = <0x10>;
+
+		clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 237 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&cam_mclk4_default>, <&cam_front_rst_n>;
+		pinctrl-names = "default";
+
+		/* The rail roles follow the voltages, 1.8 V I/O and 2.8 V analog */
+		dovdd-supply = <&vreg_l3m_1p8>;
+		avdd-supply = <&vreg_l7b_2p8>;
+
+		orientation = <0>;
+
+		/*
+		 * Register blob generated locally on the device: every sensor
+		 * register sequence, the modes and the Bayer order are in it.
+		 */
+		firmware-name = "imx681-mshw0490.bin";
+
+		/* GPIO225, shared with the IR sensor */
+		leds = <&camera_indicator>;
+		led-names = "privacy";
+
+		port {
+			front_camera_ep: endpoint {
+				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
+				data-lanes = <1>;
+				/* 2.4 Gsym/s per trio, half the symbol rate */
+				link-frequencies = /bits/ 64 <1200000000>;
+				remote-endpoint = <&camss_csiphy2_ep>;
 			};
 		};
 	};
@@ -1374,6 +1469,27 @@
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
+	};
+
+	cam_front_rst_n: cam-front-reset-n-state {
+		pins = "gpio237";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	cam_mclk4_default: cam-mclk4-state {
+		pins = "gpio100";
+		function = "cam_aon";
+		drive-strength = <4>;
+		bias-disable;
+	};
+
+	cci1_i2c1_default: cci1-i2c1-state {
+		pins = "gpio235", "gpio236";
+		function = "aon_cci";
+		drive-strength = <2>;
+		bias-pull-up;
 	};
 
 	cam_mclk1_default: cam-mclk1-state {
