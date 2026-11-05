@@ -6,11 +6,13 @@
 #include <linux/slab.h>
 #include <linux/soc/qcom/apr.h>
 #include <sound/soc.h>
+#include <sound/sp11-guard.h>
 #include <sound/soc-dai.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
 #include <dt-bindings/soc/qcom,gpr.h>
 #include "q6apm.h"
+#include "q6dsp-errno.h"
 #include "audioreach.h"
 
 /* SubGraph Config */
@@ -629,8 +631,12 @@ int audioreach_send_cmd_sync(struct device *dev, gpr_device_t *gdev,
 	else
 		rc = -EINVAL;
 
-	if (rc < 0)
+	if (rc < 0) {
+		/* Reserve EOPNOTSUPP for a DSP response to registration. */
+		if (rc == -EOPNOTSUPP && hdr->opcode == APM_CMD_REGISTER_MODULE_EVENTS)
+			rc = -EIO;
 		goto err;
+	}
 
 	if (rsp_opcode)
 		rc = wait_event_timeout(*cmd_wait, (result->opcode == hdr->opcode) ||
@@ -643,7 +649,7 @@ int audioreach_send_cmd_sync(struct device *dev, gpr_device_t *gdev,
 		rc = -ETIMEDOUT;
 	} else if (result->status > 0) {
 		dev_err(dev, "DSP returned error[%x] %x\n", hdr->opcode, result->status);
-		rc = -EINVAL;
+		rc = result->status == ADSP_EUNSUPPORTED ? -EOPNOTSUPP : -EINVAL;
 	} else {
 		/* DSP successfully finished the command */
 		rc = 0;
@@ -1655,9 +1661,15 @@ int audioreach_set_media_format(struct q6apm_graph *graph,
 			rc = audioreach_module_enable(graph, module, true);
 		if (!rc) {
 			rc = audioreach_sp11_register_events(graph, module);
-			if (rc)
+			if (rc == -EOPNOTSUPP) {
+				dev_warn_once(graph->dev,
+					      "SP diagnostics unavailable; speakers remain muted\n");
+				sp11_guard_fault("sp-diagnostics", ADSP_EUNSUPPORTED);
+				rc = 0;
+			} else if (rc) {
 				dev_err(graph->dev, "SP diagnostics event registration failed: %d\n",
 					rc);
+			}
 		}
 
 		break;
