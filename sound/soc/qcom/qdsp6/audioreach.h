@@ -36,6 +36,15 @@ struct q6apm_graph;
 #define MODULE_ID_SPEAKER_PROTECTION	0x070010E2
 #define MODULE_ID_SPEAKER_PROTECTION_VI	0x070010E3
 #define MODULE_ID_CPS_DATA_ROUTER	0x070010E4
+
+/*
+ * Module instances that only the speaker protection guard (sp11cl records, audioreach-sp11.c) may
+ * configure: speaker protection, V/I sense, CPS and their feeders. A generic module blob never
+ * touches them.
+ */
+#define AR_SP11_GUARD_IID_FIRST		0x4024
+#define AR_SP11_GUARD_IID_LAST		0x402b
+#define AR_GENERIC_CFG_MAX_PARAM_SIZE	SZ_4K
 #define MODULE_ID_OPUS_DEC		0x07001174
 #define MODULE_ID_AUDIO_IF_SINK		0x0700117C
 #define MODULE_ID_AUDIO_IF_SOURCE	0x0700117D

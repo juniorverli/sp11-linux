@@ -2,6 +2,7 @@
 // Copyright (c) 2020, Linaro Limited
 
 #include <linux/kernel.h>
+#include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/soc/qcom/apr.h>
 #include <sound/soc.h>
@@ -869,6 +870,118 @@ static int audioreach_set_module_config(struct q6apm_graph *graph,
 	return q6apm_send_cmd_sync(graph->apm, pkt, 0);
 }
 
+static bool audioreach_iid_is_guarded(u32 iid)
+{
+	return iid >= AR_SP11_GUARD_IID_FIRST && iid <= AR_SP11_GUARD_IID_LAST;
+}
+
+/*
+ * Walk the topology private data of a module as a sequence of apm_module_param_data records and
+ * return the number of records, or a negative error. A record is rejected when it does not fit in
+ * the blob, is larger than 4 KiB, is not a multiple of 4 bytes, or targets an instance other than
+ * the module's own. Nothing is sent by this function.
+ */
+static int audioreach_generic_cfg_check(struct q6apm_graph *graph,
+					const struct audioreach_module *module,
+					u32 len)
+{
+	const u8 *p = (const u8 *)module->data->data;
+	u32 off = 0;
+	int n = 0;
+
+	while (off < len) {
+		const struct apm_module_param_data *rec = (const void *)(p + off);
+		u32 size;
+
+		if (len - off < APM_MODULE_PARAM_DATA_SIZE) {
+			dev_err(graph->dev, "module 0x%x: truncated record header\n",
+				module->instance_id);
+			return -EINVAL;
+		}
+
+		size = le32_to_cpu(rec->param_size);
+		if (audioreach_iid_is_guarded(le32_to_cpu(rec->module_instance_id))) {
+			dev_err(graph->dev, "module 0x%x: record for guarded instance 0x%x refused\n",
+				module->instance_id, le32_to_cpu(rec->module_instance_id));
+			return -EPERM;
+		}
+
+		if (le32_to_cpu(rec->module_instance_id) != module->instance_id ||
+		    !size || size > AR_GENERIC_CFG_MAX_PARAM_SIZE || !IS_ALIGNED(size, 4) ||
+		    size > len - off - APM_MODULE_PARAM_DATA_SIZE) {
+			dev_err(graph->dev, "module 0x%x: bad record (instance 0x%x, size %u)\n",
+				module->instance_id, le32_to_cpu(rec->module_instance_id), size);
+			return -EINVAL;
+		}
+
+		off += APM_MODULE_PARAM_DATA_SIZE + size;
+		n++;
+	}
+
+	return n;
+}
+
+/*
+ * Send the topology private data of a generic module, one SET_CFG per record. The blob holds
+ * complete apm_module_param_data records. Modules with their own handler never get here, and the
+ * speaker protection instances are never configured from a blob.
+ */
+static int audioreach_set_generic_config(struct q6apm_graph *graph,
+					 const struct audioreach_module *module)
+{
+	u32 len, off = 0;
+	const u8 *p;
+	int rc;
+
+	if (!module->data)
+		return 0;
+
+	if (audioreach_iid_is_guarded(module->instance_id))
+		return 0;
+
+	len = le32_to_cpu(module->data->size);
+	if (len < sizeof(*module->data))
+		return len ? -EINVAL : 0;
+
+	len -= sizeof(*module->data);
+	if (!len)
+		return 0;
+
+	rc = audioreach_generic_cfg_check(graph, module, len);
+	if (rc < 0)
+		return rc;
+
+	p = (const u8 *)module->data->data;
+	while (off < len) {
+		const struct apm_module_param_data *rec = (const void *)(p + off);
+		u32 size = le32_to_cpu(rec->param_size);
+		struct apm_module_param_data *param_data;
+		void *buf;
+
+		struct gpr_pkt *pkt __free(kfree) =
+			audioreach_alloc_apm_cmd_pkt(APM_MODULE_PARAM_DATA_SIZE + ALIGN(size, 8),
+						     APM_CMD_SET_CFG, 0);
+		if (IS_ERR(pkt))
+			return PTR_ERR(pkt);
+
+		buf = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
+		param_data = buf;
+		param_data->module_instance_id = module->instance_id;
+		param_data->param_id = le32_to_cpu(rec->param_id);
+		param_data->param_size = size;
+		param_data->error_code = 0;
+		memcpy(buf + APM_MODULE_PARAM_DATA_SIZE, rec + 1, size);
+
+		rc = q6apm_send_cmd_sync(graph->apm, pkt, 0);
+		if (rc)
+			return rc;
+
+		off += APM_MODULE_PARAM_DATA_SIZE + size;
+	}
+
+	return 0;
+}
+
 static int audioreach_mfc_set_media_format(struct q6apm_graph *graph,
 					   const struct audioreach_module *module,
 					   const struct audioreach_module_config *cfg)
@@ -1562,7 +1675,7 @@ int audioreach_set_media_format(struct q6apm_graph *graph,
 		break;
 
 	default:
-		rc = 0;
+		rc = audioreach_set_generic_config(graph, module);
 	}
 
 	return rc;
