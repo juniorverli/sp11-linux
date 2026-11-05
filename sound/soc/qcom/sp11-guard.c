@@ -28,6 +28,7 @@
 #include <linux/seq_file.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
+#include <linux/jiffies.h>
 #include <sound/sp11-guard.h>
 
 #undef MODULE_PARAM_PREFIX
@@ -60,6 +61,10 @@ struct sp11_guard {
 	const void *vi_graph;
 	u64 cal_generation;
 	bool vi_ambiguous;
+	u32 vi_cal_r0[2];
+	unsigned int vi_cal_mask;
+	unsigned long vi_cal_last;
+	bool vi_cal_layout_known;
 	bool loaded;
 	bool graph_up;
 	bool cps_required;
@@ -269,6 +274,30 @@ void sp11_guard_stream(enum sp11_guard_stream stream, bool start, const void *gr
 	spin_unlock_irqrestore(&guard.lock, flags);
 }
 EXPORT_SYMBOL_GPL(sp11_guard_stream);
+
+/*
+ * Measured VI calibration reported by the DSP (EVENT_ID_VI_CALIBRATION).
+ * The payload layout is not confirmed on the device, so the values are only
+ * recorded and reported; they do not satisfy sp11_guard_calibrated() and do
+ * not authorize unmute. layout_known stays false until a device run confirms
+ * the structure.
+ */
+void sp11_guard_vi_calibration(unsigned int ch, u32 r0_q24, bool layout_known)
+{
+	unsigned long flags;
+
+	if (ch >= ARRAY_SIZE(guard.vi_cal_r0) || !r0_q24)
+		return;
+	spin_lock_irqsave(&guard.lock, flags);
+	guard.vi_cal_r0[ch] = r0_q24;
+	guard.vi_cal_mask |= BIT(ch);
+	guard.vi_cal_last = jiffies;
+	guard.vi_cal_layout_known = layout_known;
+	spin_unlock_irqrestore(&guard.lock, flags);
+	pr_info("sp11-guard: VI calibration ch %u R0 0x%08x (layout %s)\n",
+		ch, r0_q24, layout_known ? "known" : "unverified");
+}
+EXPORT_SYMBOL_GPL(sp11_guard_vi_calibration);
 
 void sp11_guard_calibration_reset(void)
 {
@@ -487,6 +516,9 @@ static int sp11_guard_show(struct seq_file *s, void *unused)
 		   guard.caps_ready);
 	seq_printf(s, "degraded_fault: %d\n", sp11_guard_degraded_fault());
 	seq_printf(s, "cal_mask: 0x%x\ncal_nominal: %d\n", guard.cal_mask, guard.cal_nominal);
+	seq_printf(s, "vi_cal_mask: 0x%x\nvi_cal_layout_known: %d\nvi_cal_r0_0: 0x%08x\nvi_cal_r0_1: 0x%08x\n",
+		   guard.vi_cal_mask, guard.vi_cal_layout_known,
+		   guard.vi_cal_r0[0], guard.vi_cal_r0[1]);
 	seq_printf(s, "cal_graph_matches_vi: %d\nvi_ambiguous: %d\n",
 		   sp11_guard_cal_matches_vi(), guard.vi_ambiguous);
 	seq_printf(s, "fault: %d (%s, 0x%08x)\nnospk: %d\nallow_nominal: %d\n",

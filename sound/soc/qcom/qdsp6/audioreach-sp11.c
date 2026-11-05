@@ -483,8 +483,9 @@ out:
 	return ret;
 }
 
-int audioreach_sp11_register_events(struct q6apm_graph *graph,
-				    const struct audioreach_module *module)
+static int sp11_register_one_event(struct q6apm_graph *graph,
+				   const struct audioreach_module *module,
+				   u32 event_id)
 {
 	struct apm_module_register_events *event;
 	void *p;
@@ -498,11 +499,28 @@ int audioreach_sp11_register_events(struct q6apm_graph *graph,
 	p = (void *)pkt + GPR_HDR_SIZE + APM_CMD_HDR_SIZE;
 	event = p;
 	event->module_instance_id = module->instance_id;
-	event->event_id = EVENT_ID_SP_DIAGNOSTICS;
+	event->event_id = event_id;
 	event->is_register = 1;
 	event->event_config_payload_size = 0;
 
 	return audioreach_graph_send_cmd_sync(graph, pkt, 0);
+}
+
+int audioreach_sp11_register_events(struct q6apm_graph *graph,
+				    const struct audioreach_module *module)
+{
+	int ret;
+
+	ret = sp11_register_one_event(graph, module, EVENT_ID_SP_DIAGNOSTICS);
+	if (ret)
+		return ret;
+	/*
+	 * The DSP reports measured per-channel R0 through this event (the same
+	 * one the Windows driver registers). The payload layout is unconfirmed;
+	 * the handler records it for diagnostics and the guard keeps refusing
+	 * until the layout is verified on the device.
+	 */
+	return sp11_register_one_event(graph, module, EVENT_ID_VI_CALIBRATION);
 }
 
 /*
@@ -510,12 +528,42 @@ int audioreach_sp11_register_events(struct q6apm_graph *graph,
  * Fail safe: any diagnostics event latches a fault, and the first words are
  * logged so the first device test shows what the module reports.
  */
+static void sp11_vi_calibration_event(struct device *dev, const void *payload, u32 size)
+{
+	const __le32 *w = payload;
+	unsigned int i, num;
+	u32 words[8] = { 0 };
+
+	num = min_t(u32, size / sizeof(*w), ARRAY_SIZE(words));
+	for (i = 0; i < num; i++)
+		words[i] = le32_to_cpu(w[i]);
+	dev_info(dev,
+		 "VI calibration event: size %u, words %08x %08x %08x %08x "
+		 "%08x %08x %08x %08x\n",
+		 size, words[0], words[1], words[2], words[3],
+		 words[4], words[5], words[6], words[7]);
+
+	/*
+	 * Candidate shape (unverified): count, then (channel, R0) pairs. Only
+	 * values that fit that shape are recorded, with layout_known=false, so
+	 * the report names them without authorizing unmute.
+	 */
+	if (size < 12 || words[0] < 1 || words[0] > 2 || size < 4 + words[0] * 8)
+		return;
+	for (i = 0; i < words[0]; i++)
+		sp11_guard_vi_calibration(words[1 + i * 2], words[2 + i * 2], false);
+}
+
 void audioreach_sp11_event(struct device *dev, u32 event_id, const void *payload, u32 size)
 {
 	const __le32 *w = payload;
 	u32 first = size >= sizeof(*w) ? le32_to_cpu(w[0]) : 0;
 	u32 second = size >= 2 * sizeof(*w) ? le32_to_cpu(w[1]) : 0;
 
+	if (event_id == EVENT_ID_VI_CALIBRATION) {
+		sp11_vi_calibration_event(dev, payload, size);
+		return;
+	}
 	if (event_id != EVENT_ID_SP_DIAGNOSTICS)
 		return;
 

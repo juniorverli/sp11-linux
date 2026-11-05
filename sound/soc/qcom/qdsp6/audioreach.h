@@ -1081,6 +1081,7 @@ int audioreach_shmem_register_event(struct q6apm_graph *graph, int bytes, int nu
 
 /* Closed-loop speaker protection (audioreach-sp11.c) */
 #define EVENT_ID_SP_DIAGNOSTICS		0x0800138c
+#define EVENT_ID_VI_CALIBRATION		0x08001511
 #define PARAM_ID_SP_TH_VI_R0T0_CFG	0x080011f5
 
 int audioreach_sp11_load(struct device *dev, const char *driver_name, const char *card_name);
