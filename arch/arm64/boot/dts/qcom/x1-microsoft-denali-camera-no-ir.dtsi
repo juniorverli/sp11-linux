@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/* Exclude the unsupported IR endpoint from CAMSS's async notifier. */
+&camss {
+	ports {
+		/delete-node/ port@0;
+	};
+};
+
+&ir_camera {
+	status = "disabled";
+	/delete-node/ port;
+};
+
+&cci0_i2c0 {
+	status = "disabled";
+};
