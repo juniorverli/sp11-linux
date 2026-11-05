@@ -945,6 +945,7 @@
 		avdd-supply = <&vreg_l5m_2p8>;
 
 		orientation = <1>;
+		rotation = <180>;
 
 		/*
 		 * The rear sensor lights its own indicator, GPIO105. GPIO225 is
