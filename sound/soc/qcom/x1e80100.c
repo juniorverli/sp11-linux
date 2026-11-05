@@ -3,6 +3,7 @@
 
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/soundwire/sdw.h>
 #include <sound/pcm.h>
@@ -162,8 +163,27 @@ static int x1e80100_snd_hw_free(struct snd_pcm_substream *substream)
 	return qcom_snd_sdw_hw_free(substream, &data->stream_prepared[cpu_dai->id]);
 }
 
+static int x1e80100_snd_startup(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+
+	/*
+	 * Surface Pro 11: the speaker protection graph (V/I and CPS feedback,
+	 * calibration, fault handling) is not validated yet. Refuse the WSA
+	 * playback links before any SoundWire or DAPM power-up. There is
+	 * deliberately no module parameter, control or sysfs override.
+	 */
+	if (of_machine_is_compatible("microsoft,denali") &&
+	    (cpu_dai->id == WSA_CODEC_DMA_RX_0 ||
+	     cpu_dai->id == WSA_CODEC_DMA_RX_1))
+		return -EOPNOTSUPP;
+
+	return qcom_snd_sdw_startup(substream);
+}
+
 static const struct snd_soc_ops x1e80100_be_ops = {
-	.startup = qcom_snd_sdw_startup,
+	.startup = x1e80100_snd_startup,
 	.shutdown = qcom_snd_sdw_shutdown,
 	.hw_free = x1e80100_snd_hw_free,
 	.prepare = x1e80100_snd_prepare,
