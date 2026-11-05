@@ -127,3 +127,18 @@
 		bias-disable;
 	};
 };
+
+/*
+ * The PS8830 retimers already carry the orientation switch of each port and,
+ * through ps883x_sw_set(), forward every orientation change to the QMP combo
+ * PHY behind them. Do not register the PHYs as orientation switches: they keep
+ * the fixed normal lane mapping and only the retimers flip. Experiment for
+ * reverse-orientation SuperSpeed; the PHYs stay registered as mode switches.
+ */
+&usb_1_ss0_qmpphy {
+	/delete-property/ orientation-switch;
+};
+
+&usb_1_ss1_qmpphy {
+	/delete-property/ orientation-switch;
+};
