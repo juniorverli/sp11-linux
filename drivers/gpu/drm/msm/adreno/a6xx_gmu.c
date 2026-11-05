@@ -1808,6 +1808,9 @@ static int a6xx_gmu_rpmh_dep_votes_init(struct device *dev, u32 *votes,
 	 * count accordingly
 	 */
 	count >>= 1;
+	/* Exclude trailing zero padding from the MX corner list. */
+	while (count && !mx[count - 1])
+		count--;
 	if (!count)
 		return -EINVAL;
 
@@ -1827,16 +1830,9 @@ static int a6xx_gmu_rpmh_dep_votes_init(struct device *dev, u32 *votes,
 			}
 		}
 
-		if (j == count) {
-			DRM_DEV_ERROR(dev,
-				      "Mx Level %u not found in the RPMh list\n",
-				      level);
-			DRM_DEV_ERROR(dev, "Available levels:\n");
-			for (j = 0; j < count; j++)
-				DRM_DEV_ERROR(dev, "  %u\n", mx[j]);
-
-			return -EINVAL;
-		}
+		/* Clamp requests above the MX table to the last valid corner. */
+		if (j == count)
+			index = count - 1;
 
 		/* Construct the vote */
 		votes[i] = (0x3fff << 14) | (index << 8) | (0xff);
