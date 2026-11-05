@@ -947,7 +947,7 @@ struct csiphy_cphy_reg {
 	u8 delay_us;
 };
 
-/* Written for every trio, all trios first, before the lane registers */
+/* Written for each active trio before the lane registers */
 static const struct csiphy_cphy_reg lane_regs_cphy_x1e80100_init[] = {
 	{ 0x02f4, 0x00, 0 },
 	{ 0x02f8, 0x00, 0 },
@@ -955,7 +955,7 @@ static const struct csiphy_cphy_reg lane_regs_cphy_x1e80100_init[] = {
 	{ 0x02f0, 0xef, 3 },
 };
 
-/* Written for every trio, trio by trio */
+/* Written for each active trio, trio by trio */
 static const struct csiphy_cphy_reg lane_regs_cphy_x1e80100[] = {
 	{ 0x0204, 0x00, 0 },
 	{ 0x02e4, 0x00, 0 },
@@ -1295,14 +1295,15 @@ static void csiphy_cphy_write(struct csiphy_device *csiphy, u32 offset, u8 val,
 }
 
 static void csiphy_cphy_config_trios(struct csiphy_device *csiphy,
+				     const struct csiphy_lanes_cfg *lane_cfg,
 				     const struct csiphy_cphy_rate *rate)
 {
 	u32 base;
 	int n, i;
 
 	/* Symbol rate dependent analog front end settings */
-	for (n = 0; n < CSIPHY_CPHY_NUM_TRIOS; n++) {
-		base = n * CSIPHY_CPHY_TRIO_STRIDE;
+	for (n = 0; n < lane_cfg->num_data; n++) {
+		base = lane_cfg->data[n].pos * CSIPHY_CPHY_TRIO_STRIDE;
 
 		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_0268, 0xf1, 0);
 		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_0294, 0x01, 0);
@@ -1314,12 +1315,12 @@ static void csiphy_cphy_config_trios(struct csiphy_device *csiphy,
 				  rate->buffer_eq, 0);
 		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_LOFREQ_EQ,
 				  rate->lofreq_eq,
-				  n == CSIPHY_CPHY_NUM_TRIOS - 1 ? 10 : 0);
+				  n == lane_cfg->num_data - 1 ? 10 : 0);
 	}
 
 	/* Settle count and the other symbol rate sensitive registers */
-	for (n = 0; n < CSIPHY_CPHY_NUM_TRIOS; n++) {
-		base = n * CSIPHY_CPHY_TRIO_STRIDE;
+	for (n = 0; n < lane_cfg->num_data; n++) {
+		base = lane_cfg->data[n].pos * CSIPHY_CPHY_TRIO_STRIDE;
 
 		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_SETTLE_LOW,
 				  rate->settle_cnt & 0xff, 0);
@@ -1331,8 +1332,8 @@ static void csiphy_cphy_config_trios(struct csiphy_device *csiphy,
 	}
 
 	/* Rate independent lane settings */
-	for (n = 0; n < CSIPHY_CPHY_NUM_TRIOS; n++) {
-		base = n * CSIPHY_CPHY_TRIO_STRIDE;
+	for (n = 0; n < lane_cfg->num_data; n++) {
+		base = lane_cfg->data[n].pos * CSIPHY_CPHY_TRIO_STRIDE;
 
 		for (i = 0; i < ARRAY_SIZE(lane_regs_cphy_x1e80100_init); i++)
 			csiphy_cphy_write(csiphy,
@@ -1341,8 +1342,8 @@ static void csiphy_cphy_config_trios(struct csiphy_device *csiphy,
 					  lane_regs_cphy_x1e80100_init[i].delay_us);
 	}
 
-	for (n = 0; n < CSIPHY_CPHY_NUM_TRIOS; n++) {
-		base = n * CSIPHY_CPHY_TRIO_STRIDE;
+	for (n = 0; n < lane_cfg->num_data; n++) {
+		base = lane_cfg->data[n].pos * CSIPHY_CPHY_TRIO_STRIDE;
 
 		for (i = 0; i < ARRAY_SIZE(lane_regs_cphy_x1e80100); i++)
 			csiphy_cphy_write(csiphy,
@@ -1403,7 +1404,7 @@ static void csiphy_cphy_lanes_enable(struct csiphy_device *csiphy,
 		       csiphy->base +
 		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 6));
 
-	csiphy_cphy_config_trios(csiphy, rate);
+	csiphy_cphy_config_trios(csiphy, c, rate);
 
 	csiphy_mask_all_irqs(csiphy);
 
