@@ -7,9 +7,11 @@
 #include <linux/platform_device.h>
 #include <linux/soundwire/sdw.h>
 #include <sound/pcm.h>
+#include <sound/pcm_params.h>
 #include <sound/jack.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
+#include <sound/sp11-guard.h>
 
 #include "common.h"
 #include "qdsp6/q6afe.h"
@@ -85,6 +87,26 @@ static int x1e80100_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 
 	rate->min = rate->max = 48000;
 	switch (cpu_dai->id) {
+	case WSA_CODEC_DMA_TX_0:
+		/* Speaker protection voltage/current sense: V and I of two speakers */
+		rate->min = 8000;
+		rate->max = 8000;
+		channels->min = 2;
+		channels->max = 2;
+		snd_mask_none(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT));
+		snd_mask_set_format(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT),
+				    SNDRV_PCM_FORMAT_S32_LE);
+		break;
+	case WSA_CODEC_DMA_TX_2:
+		/* Speaker protection class-H (CPS) feedback of two speakers */
+		rate->min = 24000;
+		rate->max = 24000;
+		channels->min = 2;
+		channels->max = 2;
+		snd_mask_none(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT));
+		snd_mask_set_format(hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT),
+				    SNDRV_PCM_FORMAT_S32_LE);
+		break;
 	case TX_CODEC_DMA_TX_0:
 	case TX_CODEC_DMA_TX_1:
 	case TX_CODEC_DMA_TX_2:
@@ -126,6 +148,20 @@ static int x1e80100_snd_hw_map_channels(unsigned int *ch_map, int num)
 	return 0;
 }
 
+/*
+ * Speaker stream gate, only enforced on the Surface Pro 11. It decides if the
+ * stream may be opened; the amplifier stays muted until the amplifier driver
+ * sees the guard allow the unmute (V/I sense and graph running, calibrated,
+ * no fault), which only happens once the stream is triggered.
+ */
+static int x1e80100_spk_check(struct device *dev)
+{
+	if (!of_machine_is_compatible("microsoft,denali"))
+		return 0;
+
+	return sp11_guard_check(dev);
+}
+
 static int x1e80100_snd_prepare(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
@@ -138,6 +174,11 @@ static int x1e80100_snd_prepare(struct snd_pcm_substream *substream)
 	switch (cpu_dai->id) {
 	case WSA_CODEC_DMA_RX_0:
 	case WSA_CODEC_DMA_RX_1:
+		/* The state may have changed since startup, for example a fault */
+		ret = x1e80100_spk_check(rtd->dev);
+		if (ret)
+			return ret;
+
 		ret = x1e80100_snd_hw_map_channels(rx_slot, channels);
 		if (ret)
 			return ret;
@@ -167,17 +208,21 @@ static int x1e80100_snd_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+	int ret;
 
 	/*
-	 * Surface Pro 11: the speaker protection graph (V/I and CPS feedback,
-	 * calibration, fault handling) is not validated yet. Refuse the WSA
-	 * playback links before any SoundWire or DAPM power-up. There is
-	 * deliberately no module parameter, control or sysfs override.
+	 * Surface Pro 11: refuse the stream when the closed-loop data is
+	 * missing, a fault is latched or the kill switch is set. The graph, the
+	 * V/I sense and the calibration only exist once the streams are
+	 * prepared and started, so they are not checked here: the amplifier
+	 * driver keeps the power amplifier off until they are in place.
+	 * Refuse before any SoundWire or DAPM power-up.
 	 */
-	if (of_machine_is_compatible("microsoft,denali") &&
-	    (cpu_dai->id == WSA_CODEC_DMA_RX_0 ||
-	     cpu_dai->id == WSA_CODEC_DMA_RX_1))
-		return -EOPNOTSUPP;
+	if (cpu_dai->id == WSA_CODEC_DMA_RX_0 || cpu_dai->id == WSA_CODEC_DMA_RX_1) {
+		ret = x1e80100_spk_check(rtd->dev);
+		if (ret)
+			return ret;
+	}
 
 	return qcom_snd_sdw_startup(substream);
 }
@@ -188,6 +233,33 @@ static const struct snd_soc_ops x1e80100_be_ops = {
 	.hw_free = x1e80100_snd_hw_free,
 	.prepare = x1e80100_snd_prepare,
 };
+
+/*
+ * Called by the guard when it stops allowing the speakers (a fault, or the V/I
+ * sense is gone): mute every WSA amplifier
+ */
+static void x1e80100_spk_mute(void *priv)
+{
+	struct snd_soc_card *card = priv;
+	struct snd_soc_pcm_runtime *rtd;
+	struct snd_soc_dai *codec_dai;
+	int i;
+
+	for_each_card_rtds(card, rtd) {
+		struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+
+		if (cpu_dai->id != WSA_CODEC_DMA_RX_0 && cpu_dai->id != WSA_CODEC_DMA_RX_1)
+			continue;
+
+		for_each_rtd_codec_dais(rtd, i, codec_dai)
+			snd_soc_dai_digital_mute(codec_dai, 1, SNDRV_PCM_STREAM_PLAYBACK);
+	}
+}
+
+static void x1e80100_spk_unregister(void *priv)
+{
+	sp11_guard_clear_mute(priv);
+}
 
 static void x1e80100_add_be_ops(struct snd_soc_card *card)
 {
@@ -230,7 +302,25 @@ static int x1e80100_platform_probe(struct platform_device *pdev)
 	card->driver_name = of_device_get_match_data(dev);
 	x1e80100_add_be_ops(card);
 
-	return devm_snd_soc_register_card(dev, card);
+	if (of_machine_is_compatible("microsoft,denali") && sp11_guard_nospk())
+		dev_warn(dev, "sp11.nospk is set, speakers are disabled\n");
+
+	ret = devm_snd_soc_register_card(dev, card);
+	if (ret)
+		return ret;
+
+	/*
+	 * Registered after the card so that the devm cleanup unhooks the mute
+	 * callback (and waits for a running one) before the card is
+	 * unregistered. The amplifier driver enforces the guard by itself, this
+	 * only mutes a running stream when the guard stops allowing it.
+	 */
+	if (of_machine_is_compatible("microsoft,denali")) {
+		sp11_guard_set_mute(x1e80100_spk_mute, card);
+		ret = devm_add_action_or_reset(dev, x1e80100_spk_unregister, card);
+	}
+
+	return ret;
 }
 
 static const struct of_device_id snd_x1e80100_dt_match[] = {
