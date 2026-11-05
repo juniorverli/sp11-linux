@@ -11,8 +11,12 @@
  *  - &swr0 is not touched, so it stays as the board DTS left it (disabled),
  *    no WSA8845 is enumerated and the amplifiers are never programmed.
  *
+ * The DisplayPort audio links of x1-microsoft-denali-audio-dp.dtsi are part of
+ * the card in this variant: they add no speaker path.
+ *
  * Include this file only from a DTS whose name says it is an audio variant.
  */
+#include "x1-microsoft-denali-audio-dp.dtsi"
 
 &{/sound} {
 	status = "okay";

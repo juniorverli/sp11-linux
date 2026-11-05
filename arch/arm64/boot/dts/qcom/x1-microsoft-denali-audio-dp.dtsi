@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Surface Pro 11: DisplayPort audio back ends of the sound card.
+ *
+ * The two USB-C DisplayPort controllers (mdss_dp0 and mdss_dp1) are the
+ * audio sinks of the DISPLAY_PORT_RX_0 and DISPLAY_PORT_RX_1 AudioReach back
+ * ends, as on the Hamoa IoT EVK. Without these links the card has no
+ * DisplayPort back end, no "DPn Jack" control and the controllers never bind
+ * their audio codec.
+ *
+ * This file only adds links to the sound node. It does not enable the node
+ * and it carries no speaker path: include it only from a DTS that enables
+ * the sound card, next to x1-microsoft-denali-audio-mics.dtsi or the
+ * speaker fragments.
+ */
+
+&{/sound} {
+	dp0-dai-link {
+		link-name = "DP0 Playback";
+
+		codec {
+			sound-dai = <&mdss_dp0>;
+		};
+
+		cpu {
+			sound-dai = <&q6apmbedai DISPLAY_PORT_RX_0>;
+		};
+
+		platform {
+			sound-dai = <&q6apm>;
+		};
+	};
+
+	dp1-dai-link {
+		link-name = "DP1 Playback";
+
+		codec {
+			sound-dai = <&mdss_dp1>;
+		};
+
+		cpu {
+			sound-dai = <&q6apmbedai DISPLAY_PORT_RX_1>;
+		};
+
+		platform {
+			sound-dai = <&q6apm>;
+		};
+	};
+};
