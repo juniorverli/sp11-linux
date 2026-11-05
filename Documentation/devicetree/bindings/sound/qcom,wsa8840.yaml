@@ -40,8 +40,47 @@ properties:
     minItems: 6
     maxItems: 6
 
+  qcom,battery-stack-cells:
+    description:
+      Number of battery cells stacked in series on the amplifier supply. The
+      default of 1 keeps the 1S thresholds. 2 selects the under-voltage,
+      brown-out and boost protection settings of a two-cell stack.
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [1, 2]
+    default: 1
+
+  qcom,load-ohms:
+    description:
+      Nominal speaker impedance. 4 and 6 ohm loads get the lower
+      over-current threshold of those loads.
+    enum: [4, 6, 8]
+    default: 8
+
+  qcom,internal-boost:
+    description:
+      The boost converter inductor is the amplifier's own (not an external
+      boost). Uses the boost current limit of the internal converter.
+    type: boolean
+
+  qcom,vsense-attenuation-db:
+    description:
+      Voltage sense front-end attenuation in dB. It must match the system gain
+      of the speaker protection calibration.
+    enum: [12, 15, 18, 21, 24]
+    default: 24
+
+  qcom,isense-gain-db:
+    description:
+      Current sense front-end gain in dB, matching the speaker load and the
+      speaker protection calibration.
+    enum: [6, 12, 15, 18]
+    default: 12
+
   '#sound-dai-cells':
-    const: 0
+    description:
+      0 selects the playback DAI. 1 selects by index, 0 playback, 1 voltage
+      and current sense capture, 2 class-H (CPS) capture.
+    enum: [0, 1]
 
   vdd-1p8-supply: true
   vdd-io-supply: true
