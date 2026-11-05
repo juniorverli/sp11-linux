@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Surface Pro 11: feedback links and amplifier settings of the closed-loop
+ * speaker protection (voltage/current sense and CPS).
+ *
+ * Only for the speaker variant that includes
+ * x1-microsoft-denali-audio-d26.dtsi. The links do nothing by themselves:
+ * the machine driver still refuses speaker playback until the guard sees the
+ * closed-loop graph, the sense stream, a calibration and no fault.
+ *
+ * Values from the vendor driver and calibration data of this model (see
+ * hardware/audio-speakers/evidence/2026-10-30-closed-loop.md): two-cell battery
+ * stack, 4 ohm speakers, internal boost, voltage sense -21 dB and current
+ * sense +12 dB. The two amplifiers have separate reset lines (lpass_tlmm 12
+ * and 13). Unknown without hardware: the DAI index of the SoundWire master
+ * for the feedback links, the CPS master port, and which reset line belongs
+ * to which speaker.
+ */
+
+&lpass_tlmm {
+	spkr_02_sd_n_active: spkr-02-sd-n-active-state {
+		pins = "gpio13";
+		function = "gpio";
+		drive-strength = <16>;
+		bias-disable;
+	};
+};
+
+&swr0 {
+	pinctrl-0 = <&wsa_swr_active>, <&spkr_01_sd_n_active>, <&spkr_02_sd_n_active>;
+	pinctrl-names = "default";
+};
+
+&left_spkr {
+	#sound-dai-cells = <1>;
+	qcom,battery-stack-cells = <2>;
+	qcom,load-ohms = <4>;
+	qcom,internal-boost;
+	qcom,vsense-attenuation-db = <21>;
+	qcom,isense-gain-db = <12>;
+};
+
+&right_spkr {
+	#sound-dai-cells = <1>;
+	reset-gpios = <&lpass_tlmm 13 GPIO_ACTIVE_LOW>;
+	qcom,battery-stack-cells = <2>;
+	qcom,load-ohms = <4>;
+	qcom,internal-boost;
+	qcom,vsense-attenuation-db = <21>;
+	qcom,isense-gain-db = <12>;
+};
+
+&{/sound} {
+	wsa-dai-link {
+		codec {
+			sound-dai = <&left_spkr 0>, <&right_spkr 0>,
+				    <&swr0 0>, <&lpass_wsamacro 0>;
+		};
+	};
+
+	wsa-vi-dai-link {
+		link-name = "WSA VI Feedback";
+
+		codec {
+			sound-dai = <&left_spkr 1>, <&right_spkr 1>,
+				    <&swr0 9>, <&lpass_wsamacro 2>;
+		};
+
+		cpu {
+			sound-dai = <&q6apmbedai WSA_CODEC_DMA_TX_0>;
+		};
+
+		platform {
+			sound-dai = <&q6apm>;
+		};
+	};
+
+	wsa-cps-dai-link {
+		link-name = "WSA CPS Feedback";
+
+		codec {
+			sound-dai = <&left_spkr 2>, <&right_spkr 2>,
+				    <&swr0 12>;
+		};
+
+		cpu {
+			sound-dai = <&q6apmbedai WSA_CODEC_DMA_TX_2>;
+		};
+
+		platform {
+			sound-dai = <&q6apm>;
+		};
+	};
+};
