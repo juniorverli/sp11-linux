@@ -465,6 +465,7 @@ config VIDEO_OV08X40
 
 config VIDEO_OV13858
 	tristate "OmniVision OV13858 sensor support"
+	select CRC32
 	help
 	  This is a Video4Linux2 sensor driver for the OmniVision
 	  OV13858 camera.
