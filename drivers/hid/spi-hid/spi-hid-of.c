@@ -101,15 +101,15 @@ static int spi_hid_of_power_down(struct spihid_ops *ops)
 	struct spi_hid_of_config *conf = container_of(ops,
 						      struct spi_hid_of_config,
 						      ops);
+	int reset_error = 0;
 	int error;
 
 	if (!conf->supply_enabled)
 		return 0;
 
 	if (conf->data.pre_power_off_delay_ms) {
-		error = gpiod_set_value_cansleep(conf->reset_gpio, 1);
-		if (error)
-			return error;
+		/* Still cut the supply if the reset line cannot be asserted. */
+		reset_error = gpiod_set_value_cansleep(conf->reset_gpio, 1);
 
 		fsleep(1000 * conf->data.pre_power_off_delay_ms);
 	}
@@ -118,7 +118,7 @@ static int spi_hid_of_power_down(struct spihid_ops *ops)
 	if (error == 0)
 		conf->supply_enabled = false;
 
-	return error;
+	return error ?: reset_error;
 }
 
 static int spi_hid_of_power_up(struct spihid_ops *ops)
