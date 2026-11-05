@@ -25,6 +25,7 @@ struct qcom_glink_pipe {
 		      const void *hdr, size_t hlen,
 		      const void *data, size_t dlen);
 	void (*kick)(struct qcom_glink_pipe *glink_pipe);
+	void (*indices)(struct qcom_glink_pipe *glink_pipe, u32 *head, u32 *tail);
 };
 
 struct device;

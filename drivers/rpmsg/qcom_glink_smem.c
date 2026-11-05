@@ -199,6 +199,14 @@ static void glink_smem_tx_write(struct qcom_glink_pipe *glink_pipe,
 	*pipe->head = cpu_to_le32(head);
 }
 
+static void glink_smem_indices(struct qcom_glink_pipe *np, u32 *head, u32 *tail)
+{
+	struct glink_smem_pipe *pipe = to_smem_pipe(np);
+
+	*head = le32_to_cpu(*pipe->head);
+	*tail = le32_to_cpu(*pipe->tail);
+}
+
 static void glink_smem_tx_kick(struct qcom_glink_pipe *glink_pipe)
 {
 	struct glink_smem_pipe *pipe = to_smem_pipe(glink_pipe);
@@ -333,11 +341,13 @@ struct qcom_glink_smem *qcom_glink_smem_register(struct device *parent,
 	rx_pipe->native.avail = glink_smem_rx_avail;
 	rx_pipe->native.peek = glink_smem_rx_peek;
 	rx_pipe->native.advance = glink_smem_rx_advance;
+	rx_pipe->native.indices = glink_smem_indices;
 
 	tx_pipe->smem = smem;
 	tx_pipe->native.avail = glink_smem_tx_avail;
 	tx_pipe->native.write = glink_smem_tx_write;
 	tx_pipe->native.kick = glink_smem_tx_kick;
+	tx_pipe->native.indices = glink_smem_indices;
 
 	*rx_pipe->tail = 0;
 	*tx_pipe->head = 0;

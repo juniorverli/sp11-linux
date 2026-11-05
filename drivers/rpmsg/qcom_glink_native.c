@@ -1307,6 +1307,20 @@ release_channel:
 	return ERR_PTR(-ETIMEDOUT);
 }
 
+static void qcom_glink_log_fifo_indices(struct qcom_glink *glink)
+{
+	u32 txh = 0, txt = 0, rxh = 0, rxt = 0;
+
+	if (glink->tx_pipe->indices)
+		glink->tx_pipe->indices(glink->tx_pipe, &txh, &txt);
+	if (glink->rx_pipe->indices)
+		glink->rx_pipe->indices(glink->rx_pipe, &rxh, &rxt);
+
+	dev_warn_ratelimited(glink->dev,
+			     "sp11-glink: FIFO tx head=%u tail=%u rx head=%u tail=%u\n",
+			     txh, txt, rxh, rxt);
+}
+
 /* Remote initiated rpmsg_create_ept */
 static int qcom_glink_create_remote(struct qcom_glink *glink,
 				    struct glink_channel *channel)
@@ -1324,6 +1338,7 @@ static int qcom_glink_create_remote(struct qcom_glink *glink,
 		dev_warn_ratelimited(glink->dev,
 				     "sp11-glink: OPEN_ACK wait timed out after 5 s name=%s lcid=%u rcid=%u err=%d\n",
 				     channel->name, channel->lcid, channel->rcid, -ETIMEDOUT);
+		qcom_glink_log_fifo_indices(glink);
 		ret = -ETIMEDOUT;
 		goto close_link;
 	}
