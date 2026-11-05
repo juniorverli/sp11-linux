@@ -1361,11 +1361,21 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
 		status = GMU_COLD_BOOT;
 	}
 
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(gmu->dev, "GPU_BOOT_TRACE GMU firmware start begin\n");
 	ret = a6xx_gmu_fw_start(gmu, status);
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(gmu->dev, "GPU_BOOT_TRACE GMU firmware start returned=%d\n",
+			 ret);
 	if (ret)
 		goto disable_irq;
 
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(gmu->dev, "GPU_BOOT_TRACE GMU HFI start begin\n");
 	ret = a6xx_hfi_start(gmu, status);
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(gmu->dev, "GPU_BOOT_TRACE GMU HFI start returned=%d\n",
+			 ret);
 	if (ret)
 		goto disable_irq;
 

@@ -82,6 +82,8 @@ struct msm_gpu *adreno_load_gpu(struct drm_device *dev)
 	}
 
 	adreno_gpu = to_adreno_gpu(gpu);
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(dev->dev, "GPU_BOOT_TRACE load begin\n");
 
 	/*
 	 * The number one reason for HW init to fail is if the firmware isn't
@@ -92,12 +94,16 @@ struct msm_gpu *adreno_load_gpu(struct drm_device *dev)
 	ret = adreno_load_fw(adreno_gpu);
 	if (ret)
 		return NULL;
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(dev->dev, "GPU_BOOT_TRACE firmware ready\n");
 
 	if (gpu->funcs->ucode_load) {
 		ret = gpu->funcs->ucode_load(gpu);
 		if (ret)
 			return NULL;
 	}
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(dev->dev, "GPU_BOOT_TRACE ucode ready\n");
 
 	/*
 	 * Now that we have firmware loaded, and are ready to begin
@@ -105,16 +111,24 @@ struct msm_gpu *adreno_load_gpu(struct drm_device *dev)
 	 */
 	pm_runtime_enable(&pdev->dev);
 
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(dev->dev, "GPU_BOOT_TRACE runtime resume begin\n");
 	ret = pm_runtime_get_sync(&pdev->dev);
 	if (ret < 0) {
 		pm_runtime_put_noidle(&pdev->dev);
 		DRM_DEV_ERROR(dev->dev, "Couldn't power up the GPU: %d\n", ret);
 		goto err_disable_rpm;
 	}
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(dev->dev, "GPU_BOOT_TRACE runtime resume returned=%d\n", ret);
 
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(dev->dev, "GPU_BOOT_TRACE hw init begin\n");
 	mutex_lock(&gpu->lock);
 	ret = msm_gpu_hw_init(gpu);
 	mutex_unlock(&gpu->lock);
+	if (IS_ENABLED(CONFIG_DRM_MSM_GPU_BOOT_TRACE))
+		dev_info(dev->dev, "GPU_BOOT_TRACE hw init returned=%d\n", ret);
 	if (ret) {
 		DRM_DEV_ERROR(dev->dev, "gpu hw init failed: %d\n", ret);
 		goto err_put_rpm;

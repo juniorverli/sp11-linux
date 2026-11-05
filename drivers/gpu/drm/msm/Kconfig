@@ -39,6 +39,17 @@ config DRM_MSM_GPU_STATE
 	depends on DRM_MSM && (DEBUG_FS || DEV_COREDUMP)
 	default y
 
+config DRM_MSM_GPU_BOOT_TRACE
+	tristate "MSM GPU boot phase trace"
+	depends on DRM_MSM
+	default n
+	help
+	  Emit low-volume phase markers around the first GPU runtime resume,
+	  GMU firmware/HFI startup and GPU hardware initialization. This is
+	  diagnostic instrumentation for controlled boot tests; it does not
+	  change power, clock, frequency or firmware behavior. Leave disabled
+	  for normal kernels.
+
 config DRM_MSM_GPU_SUDO
 	bool "Enable SUDO flag on submits"
 	depends on DRM_MSM && EXPERT
