@@ -404,6 +404,8 @@ static int qcom_glink_send_version(struct qcom_glink *glink)
 	msg.param2 = cpu_to_le32(glink->features);
 
 	trace_qcom_glink_cmd_version_tx(glink->label, GLINK_VERSION_1, glink->features);
+	dev_info_ratelimited(glink->dev, "sp11-glink: tx VERSION version=%u features=%#lx\n",
+			     GLINK_VERSION_1, glink->features);
 
 	return qcom_glink_tx(glink, &msg, sizeof(msg), NULL, 0, true);
 }
@@ -417,6 +419,8 @@ static void qcom_glink_send_version_ack(struct qcom_glink *glink)
 	msg.param2 = cpu_to_le32(glink->features);
 
 	trace_qcom_glink_cmd_version_ack_tx(glink->label, msg.param1, msg.param2);
+	dev_info_ratelimited(glink->dev, "sp11-glink: tx VERSION_ACK version=%u features=%#lx\n",
+			     GLINK_VERSION_1, glink->features);
 
 	qcom_glink_tx(glink, &msg, sizeof(msg), NULL, 0, true);
 }
@@ -432,6 +436,8 @@ static void qcom_glink_send_open_ack(struct qcom_glink *glink,
 
 	trace_qcom_glink_cmd_open_ack_tx(glink->label, channel->name,
 					 channel->lcid, channel->rcid);
+	dev_info_ratelimited(glink->dev, "sp11-glink: tx OPEN_ACK name=%s lcid=%u rcid=%u\n",
+			     channel->name, channel->lcid, channel->rcid);
 
 	qcom_glink_tx(glink, &msg, sizeof(msg), NULL, 0, true);
 }
@@ -505,6 +511,8 @@ static int qcom_glink_send_open_req(struct qcom_glink *glink,
 
 	trace_qcom_glink_cmd_open_tx(glink->label, channel->name,
 				     channel->lcid, channel->rcid);
+	dev_info_ratelimited(glink->dev, "sp11-glink: tx OPEN name=%s lcid=%u rcid=%u\n",
+			     channel->name, channel->lcid, channel->rcid);
 
 	ret = qcom_glink_tx(glink, req, req_len, NULL, 0, true);
 	if (ret)
@@ -633,6 +641,8 @@ static void qcom_glink_receive_version(struct qcom_glink *glink,
 				       u32 features)
 {
 	trace_qcom_glink_cmd_version_rx(glink->label, version, features);
+	dev_info_ratelimited(glink->dev, "sp11-glink: rx VERSION version=%u features=%#x\n",
+			     version, features);
 
 	switch (version) {
 	case 0:
@@ -662,6 +672,8 @@ static void qcom_glink_receive_version_ack(struct qcom_glink *glink,
 					   u32 features)
 {
 	trace_qcom_glink_cmd_version_ack_rx(glink->label, version, features);
+	dev_info_ratelimited(glink->dev, "sp11-glink: rx VERSION_ACK version=%u features=%#x\n",
+			     version, features);
 
 	switch (version) {
 	case 0:
@@ -738,6 +750,10 @@ static int qcom_glink_advertise_intent(struct qcom_glink *glink,
 	trace_qcom_glink_cmd_intent_tx(glink->label, channel->name,
 				       channel->lcid, channel->rcid,
 				       cmd.count, cmd.size, cmd.liid);
+	dev_info_ratelimited(glink->dev,
+			     "sp11-glink: tx RX_INTENT name=%s lcid=%u rcid=%u size=%zu liid=%u\n",
+			     channel->name, channel->lcid, channel->rcid,
+			     intent->size, intent->id);
 
 	qcom_glink_tx(glink, &cmd, sizeof(cmd), NULL, 0, true);
 
@@ -1068,6 +1084,10 @@ static void qcom_glink_handle_intent(struct qcom_glink *glink,
 				       channel->lcid, cid, count,
 				       count > 0 ? msg->intents[0].size : 0,
 				       count > 0 ? msg->intents[0].iid : 0);
+	dev_info_ratelimited(glink->dev,
+			     "sp11-glink: rx RX_INTENT name=%s lcid=%u rcid=%u count=%u size=%u\n",
+			     channel->name, channel->lcid, cid, count,
+			     count > 0 ? le32_to_cpu(msg->intents[0].size) : 0);
 
 	for (i = 0; i < count; ++i) {
 		intent = kzalloc_obj(*intent, GFP_ATOMIC);
@@ -1105,6 +1125,9 @@ static int qcom_glink_rx_open_ack(struct qcom_glink *glink, unsigned int lcid)
 
 	trace_qcom_glink_cmd_open_ack_rx(glink->label, channel ? channel->name : NULL,
 					 lcid, channel ? channel->rcid : 0);
+	dev_info_ratelimited(glink->dev, "sp11-glink: rx OPEN_ACK name=%s lcid=%u rcid=%u\n",
+			     channel ? channel->name : "(none)", lcid,
+			     channel ? channel->rcid : 0);
 	if (!channel) {
 		dev_err(glink->dev, "Invalid open ack packet\n");
 		return -EINVAL;
@@ -1298,6 +1321,9 @@ static int qcom_glink_create_remote(struct qcom_glink *glink,
 
 	ret = wait_for_completion_timeout(&channel->open_ack, 5 * HZ);
 	if (!ret) {
+		dev_warn_ratelimited(glink->dev,
+				     "sp11-glink: OPEN_ACK wait timed out after 5 s name=%s lcid=%u rcid=%u err=%d\n",
+				     channel->name, channel->lcid, channel->rcid, -ETIMEDOUT);
 		ret = -ETIMEDOUT;
 		goto close_link;
 	}
@@ -1340,12 +1366,20 @@ static struct rpmsg_endpoint *qcom_glink_create_ept(struct rpmsg_device *rpdev,
 
 	if (!channel) {
 		channel = qcom_glink_create_local(glink, name);
-		if (IS_ERR(channel))
+		if (IS_ERR(channel)) {
+			dev_warn_ratelimited(glink->dev,
+					     "sp11-glink: create_ept local name=%s failed err=%pe\n",
+					     name, channel);
 			return NULL;
+		}
 	} else {
 		ret = qcom_glink_create_remote(glink, channel);
-		if (ret)
+		if (ret) {
+			dev_warn_ratelimited(glink->dev,
+					     "sp11-glink: create_ept remote name=%s failed err=%d\n",
+					     name, ret);
 			return NULL;
+		}
 	}
 
 	ept = &channel->ept;
@@ -1654,6 +1688,8 @@ static int qcom_glink_rx_open(struct qcom_glink *glink, unsigned int rcid,
 	}
 
 	trace_qcom_glink_cmd_open_rx(glink->label, name, channel->lcid, rcid);
+	dev_info_ratelimited(glink->dev, "sp11-glink: rx OPEN name=%s lcid=%u rcid=%u\n",
+			     name, channel->lcid, rcid);
 
 	spin_lock_irqsave(&glink->idr_lock, flags);
 	ret = idr_alloc(&glink->rcids, channel, rcid, rcid + 1, GFP_ATOMIC);
