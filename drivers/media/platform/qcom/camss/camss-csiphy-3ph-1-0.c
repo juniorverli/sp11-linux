@@ -6,6 +6,11 @@
  *
  * Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2016-2018 Linaro Ltd.
+ * Copyright (c) 2021-2024, Qualcomm Innovation Center, Inc. All rights reserved.
+ *
+ * The C-PHY register sequence for the v2.1.2 block is derived from the
+ * Qualcomm camera-kernel (cam_csiphy_2_1_2_hwreg.h, cam_csiphy_core.c),
+ * GPL-2.0-only.
  */
 
 #include "camss.h"
@@ -14,6 +19,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/math64.h>
 
 #define CSIPHY_3PH_LNn_CFG1(n)			(0x000 + 0x100 * (n))
 #define CSIPHY_3PH_LNn_CFG1_SWI_REC_DLY_PRG	(BIT(7) | BIT(6))
@@ -46,6 +52,10 @@
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRL5_CLK_ENABLE	BIT(7)
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRL6_COMMON_PWRDN_B	BIT(0)
 #define CSIPHY_3PH_CMN_CSI_COMMON_CTRL6_SHOW_REV_ID	BIT(1)
+#define CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_PHY_SW_RESET	BIT(0)
+/* Reset release value of the 3-phase (C-PHY) mode */
+#define CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_CPHY_RELEASE	0x0e
+#define CSIPHY_3PH_CMN_CSI_COMMON_CTRL7_CPHY		0x7a
 #define CSIPHY_3PH_CMN_CSI_COMMON_STATUSn(offset, common_status_offset, n) \
 	((offset) + (common_status_offset) + 0x4 * (n))
 
@@ -921,6 +931,113 @@ csiphy_lane_regs lane_regs_x1e80100[] = {
 	{0x0C64, 0x7F, 0x00, CSIPHY_SKEW_CAL},
 };
 
+/*
+ * C-PHY of the 4nm 3PH v 2.1.2 block (X1E80100). There are three trios whose
+ * register banks are 0x400 apart; the lane registers below are given for
+ * trio 0 and applied to each trio. Derived from csiphy_3ph_v2_1_2_reg and
+ * datarate_212_* of the Qualcomm camera-kernel.
+ */
+#define CSIPHY_CPHY_NUM_TRIOS			3
+#define CSIPHY_CPHY_TRIO_STRIDE			0x400
+#define CSIPHY_CPHY_LANE_ENABLE(pos)		BIT((pos) * 2 + 1)
+
+struct csiphy_cphy_reg {
+	u16 offset;
+	u8 val;
+	u8 delay_us;
+};
+
+/* Written for every trio, all trios first, before the lane registers */
+static const struct csiphy_cphy_reg lane_regs_cphy_x1e80100_init[] = {
+	{ 0x02f4, 0x00, 0 },
+	{ 0x02f8, 0x00, 0 },
+	{ 0x02fc, 0x00, 0 },
+	{ 0x02f0, 0xef, 3 },
+};
+
+/* Written for every trio, trio by trio */
+static const struct csiphy_cphy_reg lane_regs_cphy_x1e80100[] = {
+	{ 0x0204, 0x00, 0 },
+	{ 0x02e4, 0x00, 0 },
+	{ 0x02e8, 0x7f, 0 },
+	{ 0x02ec, 0x7f, 0 },
+	{ 0x0218, 0x3e, 0 },
+	{ 0x021c, 0x41, 0 },
+	{ 0x0220, 0x41, 0 },
+	{ 0x0224, 0x7f, 0 },
+	{ 0x0228, 0x00, 0 },
+	{ 0x022c, 0x00, 0 },
+	{ 0x0264, 0x01, 0 },
+	{ 0x0244, 0xb2, 0 },
+	{ 0x0310, 0x35, 0 },
+	{ 0x02bc, 0xd0, 0 },
+	{ 0x0254, 0x00, 0 },
+	{ 0x0240, 0x00, 0 },
+	{ 0x0260, 0xa8, 0 },
+	{ 0x0284, 0x00, 0 },
+	{ 0x0290, 0x02, 0 },
+};
+
+/* Symbol rate independent analog front end settings, trio 0 offsets */
+#define CSIPHY_CPHY_AFE_0268			0x0268
+#define CSIPHY_CPHY_AFE_0294			0x0294
+#define CSIPHY_CPHY_AFE_0288			0x0288
+#define CSIPHY_CPHY_AFE_CDR			0x0278
+#define CSIPHY_CPHY_AFE_EQ			0x026c
+#define CSIPHY_CPHY_AFE_EQ2			0x028c
+#define CSIPHY_CPHY_AFE_BUFFER_EQ		0x0270
+#define CSIPHY_CPHY_AFE_LOFREQ_EQ		0x0274
+#define CSIPHY_CPHY_SETTLE_LOW			0x020c
+#define CSIPHY_CPHY_SETTLE_HIGH			0x0208
+#define CSIPHY_CPHY_RATE_0210			0x0210
+#define CSIPHY_CPHY_RATE_0214			0x0214
+
+/*
+ * Settings that depend on the symbol rate. A class applies up to and
+ * including its maximum symbol rate; rates above the last class use the last.
+ * The reference selects its classes by bit rate (class rate times 2.28 bits
+ * per symbol), which is the same ordering.
+ */
+struct csiphy_cphy_rate {
+	u16 max_msps;		/* maximum symbol rate of the class, Msym/s */
+	u16 settle_cnt;
+	u8 cdr;
+	u8 buffer_eq;
+	u8 lofreq_eq;
+	u8 reg_0214;
+};
+
+static const struct csiphy_cphy_rate rates_cphy_x1e80100[] = {
+	{ 100, 438, 0x58, 0x00, 0x03, 0x6b },
+	{ 200, 228, 0x58, 0x00, 0x03, 0x33 },
+	{ 300, 158, 0x58, 0x00, 0x03, 0x20 },
+	{ 350, 158, 0x58, 0x00, 0x03, 0x20 },
+	{ 400, 123, 0x58, 0x00, 0x03, 0x20 },
+	{ 500, 102, 0x58, 0x00, 0x03, 0x20 },
+	{ 600, 88, 0x58, 0x00, 0x03, 0x20 },
+	{ 700, 78, 0x58, 0x00, 0x03, 0x20 },
+	{ 800, 70, 0x58, 0x00, 0x03, 0x09 },
+	{ 900, 64, 0x58, 0x00, 0x03, 0x09 },
+	{ 1000, 60, 0x58, 0x00, 0x03, 0x09 },
+	{ 1200, 53, 0x45, 0x00, 0x03, 0x09 },
+	{ 1500, 46, 0x45, 0x00, 0x03, 0x09 },
+	{ 1700, 42, 0x2e, 0x00, 0x03, 0x09 },
+	{ 2000, 39, 0x2e, 0x00, 0x03, 0x00 },
+	{ 2100, 38, 0x20, 0x00, 0x03, 0x00 },
+	{ 2350, 35, 0x20, 0x00, 0x03, 0x00 },
+	{ 2500, 34, 0x20, 0x00, 0x03, 0x00 },
+	{ 2600, 34, 0x17, 0x01, 0x00, 0x00 },
+	{ 2800, 33, 0x17, 0x01, 0x00, 0x00 },
+	{ 3000, 32, 0x17, 0x01, 0x00, 0x00 },
+	{ 3300, 30, 0x10, 0x01, 0x00, 0x00 },
+	{ 3500, 30, 0x10, 0x01, 0x00, 0x00 },
+	{ 4000, 28, 0x0c, 0x01, 0x00, 0x00 },
+	{ 4500, 27, 0x06, 0x01, 0x00, 0x00 },
+	{ 5000, 26, 0x02, 0x01, 0x00, 0x00 },
+	{ 5500, 25, 0x00, 0x01, 0x00, 0x00 },
+	{ 6000, 25, 0x00, 0x01, 0x00, 0x00 },
+};
+
 static void csiphy_hw_version_read(struct csiphy_device *csiphy,
 				   struct device *dev)
 {
@@ -1116,7 +1233,9 @@ static u8 csiphy_get_lane_mask(struct csiphy_lanes_cfg *lane_cfg)
 	u8 lane_mask;
 	int i;
 
-	lane_mask = CSIPHY_3PH_CMN_CSI_COMMON_CTRL5_CLK_ENABLE;
+	/* C-PHY has no clock lane */
+	lane_mask = lane_cfg->cphy ? 0 :
+		    CSIPHY_3PH_CMN_CSI_COMMON_CTRL5_CLK_ENABLE;
 
 	for (i = 0; i < lane_cfg->num_data; i++)
 		lane_mask |= 1 << lane_cfg->data[i].pos;
@@ -1148,6 +1267,152 @@ static bool csiphy_is_gen2(u32 version)
 	return ret;
 }
 
+/*
+ * csiphy_cphy_get_rate - Select the symbol rate class of a C-PHY link
+ * @link_freq: Link frequency in Hz, which is 1 / (2 * UI) with the UI being
+ *             one symbol
+ *
+ * Return the settings of the first class that holds the symbol rate
+ */
+static const struct csiphy_cphy_rate *csiphy_cphy_get_rate(s64 link_freq)
+{
+	u64 symbol_rate = 2 * max_t(s64, link_freq, 0);
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(rates_cphy_x1e80100) - 1; i++)
+		if (symbol_rate <= (u64)rates_cphy_x1e80100[i].max_msps * 1000000)
+			break;
+
+	return &rates_cphy_x1e80100[i];
+}
+
+static void csiphy_cphy_write(struct csiphy_device *csiphy, u32 offset, u8 val,
+			      u8 delay_us)
+{
+	writel_relaxed(val, csiphy->base + offset);
+	if (delay_us)
+		udelay(delay_us);
+}
+
+static void csiphy_cphy_config_trios(struct csiphy_device *csiphy,
+				     const struct csiphy_cphy_rate *rate)
+{
+	u32 base;
+	int n, i;
+
+	/* Symbol rate dependent analog front end settings */
+	for (n = 0; n < CSIPHY_CPHY_NUM_TRIOS; n++) {
+		base = n * CSIPHY_CPHY_TRIO_STRIDE;
+
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_0268, 0xf1, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_0294, 0x01, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_0288, 0x20, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_CDR, rate->cdr, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_EQ, 0x3d, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_EQ2, 0x30, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_BUFFER_EQ,
+				  rate->buffer_eq, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_AFE_LOFREQ_EQ,
+				  rate->lofreq_eq,
+				  n == CSIPHY_CPHY_NUM_TRIOS - 1 ? 10 : 0);
+	}
+
+	/* Settle count and the other symbol rate sensitive registers */
+	for (n = 0; n < CSIPHY_CPHY_NUM_TRIOS; n++) {
+		base = n * CSIPHY_CPHY_TRIO_STRIDE;
+
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_SETTLE_LOW,
+				  rate->settle_cnt & 0xff, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_SETTLE_HIGH,
+				  rate->settle_cnt >> 8, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_RATE_0210, 0x00, 0);
+		csiphy_cphy_write(csiphy, base + CSIPHY_CPHY_RATE_0214,
+				  rate->reg_0214, 0);
+	}
+
+	/* Rate independent lane settings */
+	for (n = 0; n < CSIPHY_CPHY_NUM_TRIOS; n++) {
+		base = n * CSIPHY_CPHY_TRIO_STRIDE;
+
+		for (i = 0; i < ARRAY_SIZE(lane_regs_cphy_x1e80100_init); i++)
+			csiphy_cphy_write(csiphy,
+					  base + lane_regs_cphy_x1e80100_init[i].offset,
+					  lane_regs_cphy_x1e80100_init[i].val,
+					  lane_regs_cphy_x1e80100_init[i].delay_us);
+	}
+
+	for (n = 0; n < CSIPHY_CPHY_NUM_TRIOS; n++) {
+		base = n * CSIPHY_CPHY_TRIO_STRIDE;
+
+		for (i = 0; i < ARRAY_SIZE(lane_regs_cphy_x1e80100); i++)
+			csiphy_cphy_write(csiphy,
+					  base + lane_regs_cphy_x1e80100[i].offset,
+					  lane_regs_cphy_x1e80100[i].val,
+					  lane_regs_cphy_x1e80100[i].delay_us);
+	}
+}
+
+static void csiphy_mask_all_irqs(struct csiphy_device *csiphy)
+{
+	struct csiphy_device_regs *regs = csiphy->regs;
+	int i;
+
+	/* IRQ_MASK registers - disable all interrupts */
+	for (i = 11; i < 22; i++) {
+		writel_relaxed(0, csiphy->base +
+			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, i));
+	}
+}
+
+/*
+ * csiphy_cphy_lanes_enable - Configure and start a C-PHY link
+ *
+ * The sequence follows the Qualcomm reference: hold the PHY in reset, enable
+ * the trios, write the common, symbol rate dependent and lane registers, then
+ * release the reset and wait for the PHY to come up.
+ */
+static void csiphy_cphy_lanes_enable(struct csiphy_device *csiphy,
+				     struct csiphy_config *cfg, s64 link_freq)
+{
+	struct csiphy_lanes_cfg *c = &cfg->csi2->lane_cfg;
+	struct csiphy_device_regs *regs = csiphy->regs;
+	const struct csiphy_cphy_rate *rate = csiphy_cphy_get_rate(link_freq);
+	u8 val = 0;
+	int i;
+
+	writel_relaxed(CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_PHY_SW_RESET,
+		       csiphy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
+	udelay(1);
+
+	/* One enable bit per trio, no clock lane */
+	for (i = 0; i < c->num_data; i++)
+		val |= CSIPHY_CPHY_LANE_ENABLE(c->data[i].pos);
+	writel_relaxed(val, csiphy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 5));
+
+	/* Common registers */
+	writel_relaxed(0x00, csiphy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 33));
+	writel_relaxed(0x00, csiphy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 35));
+	udelay(1);
+	writel_relaxed(CSIPHY_3PH_CMN_CSI_COMMON_CTRL7_CPHY, csiphy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 7));
+	writel_relaxed(CSIPHY_3PH_CMN_CSI_COMMON_CTRL6_COMMON_PWRDN_B,
+		       csiphy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 6));
+
+	csiphy_cphy_config_trios(csiphy, rate);
+
+	csiphy_mask_all_irqs(csiphy);
+
+	writel_relaxed(CSIPHY_3PH_CMN_CSI_COMMON_CTRL0_CPHY_RELEASE,
+		       csiphy->base +
+		       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, 0));
+	usleep_range(3048, 3200);
+}
+
 static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 				struct csiphy_config *cfg,
 				s64 link_freq, u8 lane_mask)
@@ -1157,6 +1422,11 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 	u8 settle_cnt;
 	u8 val;
 	int i;
+
+	if (c->cphy) {
+		csiphy_cphy_lanes_enable(csiphy, cfg, link_freq);
+		return;
+	}
 
 	settle_cnt = csiphy_settle_cnt_calc(link_freq, csiphy->timer_clk_rate);
 
@@ -1184,11 +1454,7 @@ static void csiphy_lanes_enable(struct csiphy_device *csiphy,
 	else
 		csiphy_gen1_config_lanes(csiphy, cfg, settle_cnt);
 
-	/* IRQ_MASK registers - disable all interrupts */
-	for (i = 11; i < 22; i++) {
-		writel_relaxed(0, csiphy->base +
-			       CSIPHY_3PH_CMN_CSI_COMMON_CTRLn(regs->offset, i));
-	}
+	csiphy_mask_all_irqs(csiphy);
 }
 
 static void csiphy_lanes_disable(struct csiphy_device *csiphy,
