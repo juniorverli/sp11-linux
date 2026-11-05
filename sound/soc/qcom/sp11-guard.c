@@ -42,7 +42,16 @@ module_param(allow_nominal, bool, 0444);
 MODULE_PARM_DESC(allow_nominal,
 		 "Accept a nominal (not measured) R0/T0 start (boot-time only)");
 
+enum sp11_mode {
+	SP11_MODE_UNKNOWN,
+	SP11_MODE_CLOSED_LOOP,
+	SP11_MODE_OPEN_LOOP,
+	SP11_MODE_REFUSED,
+};
+
 struct sp11_guard {
+	enum sp11_mode mode;
+	bool caps_ready;
 	spinlock_t lock;	/* protects all fields below */
 	unsigned int streams[SP11_STREAM_MAX];
 	unsigned int cal_mask;
@@ -66,13 +75,55 @@ static struct sp11_guard guard = {
 };
 
 /* Reason a stream may not be opened, NULL when it may. Called with guard.lock held. */
+int sp11_guard_select_mode(bool marker_valid, bool has_sp)
+{
+	unsigned long flags;
+	enum sp11_mode mode;
+
+	if (!marker_valid)
+		mode = SP11_MODE_REFUSED;
+	else if (has_sp)
+		mode = SP11_MODE_CLOSED_LOOP;
+	else
+		mode = SP11_MODE_OPEN_LOOP;
+
+	spin_lock_irqsave(&guard.lock, flags);
+	if (guard.mode != SP11_MODE_UNKNOWN && guard.mode != mode) {
+		guard.mode = SP11_MODE_REFUSED;
+		spin_unlock_irqrestore(&guard.lock, flags);
+		return -EINVAL;
+	}
+	guard.mode = mode;
+	spin_unlock_irqrestore(&guard.lock, flags);
+
+	pr_info_once("sp11: selected %s speaker mode\n",
+		     mode == SP11_MODE_OPEN_LOOP ? "D26 open-loop" :
+		     mode == SP11_MODE_CLOSED_LOOP ? "closed-loop" : "refused");
+	return mode == SP11_MODE_REFUSED ? -EOPNOTSUPP : 0;
+}
+EXPORT_SYMBOL_GPL(sp11_guard_select_mode);
+
+void sp11_guard_caps_ready(bool ready)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&guard.lock, flags);
+	guard.caps_ready = ready;
+	spin_unlock_irqrestore(&guard.lock, flags);
+}
+EXPORT_SYMBOL_GPL(sp11_guard_caps_ready);
+
 static const char *sp11_guard_open_reason(void)
 {
+	if (guard.mode == SP11_MODE_UNKNOWN || guard.mode == SP11_MODE_REFUSED)
+		return "speaker topology mode is unknown or refused";
+	if (!guard.caps_ready)
+		return "PA, RX or MIX volume caps are not installed";
 	if (nospk)
 		return "sp11.nospk is set";
 	if (guard.fault)
 		return "a speaker fault is latched";
-	if (!guard.loaded)
+	if (guard.mode == SP11_MODE_CLOSED_LOOP && !guard.loaded)
 		return "the closed-loop data is not loaded";
 
 	return NULL;
@@ -87,6 +138,8 @@ static const char *sp11_guard_reason(void)
 
 	if (reason)
 		return reason;
+	if (guard.mode == SP11_MODE_OPEN_LOOP)
+		return NULL;
 	if (sp11_guard_degraded_fault())
 		return "degraded diagnostics prerequisites are incomplete";
 	if (!guard.graph_up)
@@ -342,8 +395,11 @@ static int sp11_guard_show(struct seq_file *s, void *unused)
 	seq_printf(s, "loaded: %d\ngraph_up: %d\nvi_streams: %u\ncps_streams: %u\ncps_required: %d\n",
 		   guard.loaded, guard.graph_up, guard.streams[SP11_STREAM_VI],
 		   guard.streams[SP11_STREAM_CPS], guard.cps_required);
-	seq_printf(s, "sp_enabled: %d\ndiagnostics_degraded: %d\n",
-		   guard.sp_enabled, guard.diagnostics_degraded);
+	seq_printf(s, "sp_enabled: %d\ndiagnostics_degraded: %d\nmode: %s\ncaps_ready: %d\n",
+		   guard.sp_enabled, guard.diagnostics_degraded,
+		   guard.mode == SP11_MODE_OPEN_LOOP ? "open-loop" :
+		   guard.mode == SP11_MODE_CLOSED_LOOP ? "closed-loop" : "refused",
+		   guard.caps_ready);
 	seq_printf(s, "degraded_fault: %d\n", sp11_guard_degraded_fault());
 	seq_printf(s, "cal_mask: 0x%x\ncal_nominal: %d\n", guard.cal_mask, guard.cal_nominal);
 	seq_printf(s, "fault: %d (%s, 0x%08x)\nnospk: %d\nallow_nominal: %d\n",

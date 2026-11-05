@@ -3,6 +3,7 @@
 
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/module.h>
+#include <linux/string.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/soundwire/sdw.h>
@@ -26,6 +27,64 @@ struct x1e80100_snd_data {
 	bool jack_setup;
 };
 
+static int x1e80100_limit_volume(struct snd_soc_card *card, const char *name,
+				 int max, bool required)
+{
+	struct snd_kcontrol *kctl = snd_soc_card_get_kcontrol(card, name);
+	int ret;
+
+	if (!kctl && !required)
+		return 0;
+
+	ret = snd_soc_limit_volume(card, name, max);
+	if (ret)
+		dev_err(card->dev, "speaker volume cap failed for %s: %d\n",
+			name, ret);
+
+	return ret;
+}
+
+static int x1e80100_install_spk_caps(struct snd_soc_card *card)
+{
+	static const char * const required[] = {
+		"WSA WSA_RX0 Digital Volume",
+		"WSA WSA_RX1 Digital Volume",
+		"WSA WSA_RX0_MIX Digital Volume",
+		"WSA WSA_RX1_MIX Digital Volume",
+		"SpkrLeft PA Volume",
+		"SpkrRight PA Volume",
+	};
+	static const char * const optional[] = {
+		"WSA2 WSA_RX0 Digital Volume",
+		"WSA2 WSA_RX1 Digital Volume",
+		"WSA2 WSA_RX0_MIX Digital Volume",
+		"WSA2 WSA_RX1_MIX Digital Volume",
+		"WooferLeft PA Volume",
+		"TweeterLeft PA Volume",
+		"WooferRight PA Volume",
+		"TweeterRight PA Volume",
+	};
+	int i, ret;
+
+	sp11_guard_caps_ready(false);
+	for (i = 0; i < ARRAY_SIZE(required); i++) {
+		ret = x1e80100_limit_volume(card, required[i],
+					    strstr(required[i], "PA Volume") ? 6 : 81,
+					    true);
+		if (ret)
+			return ret;
+	}
+	for (i = 0; i < ARRAY_SIZE(optional); i++) {
+		ret = x1e80100_limit_volume(card, optional[i],
+					    strstr(optional[i], "PA Volume") ? 6 : 81,
+					    false);
+		if (ret)
+			return ret;
+	}
+	sp11_guard_caps_ready(true);
+	return 0;
+}
+
 static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct x1e80100_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
@@ -33,30 +92,32 @@ static int x1e80100_snd_init(struct snd_soc_pcm_runtime *rtd)
 	struct snd_soc_card *card = rtd->card;
 	struct snd_soc_jack *dp_jack = NULL;
 	int dp_pcm_id = 0;
+	int ret;
 
 	switch (cpu_dai->id) {
 	case WSA_CODEC_DMA_RX_0:
 	case WSA_CODEC_DMA_RX_1:
-		/*
-		 * Set limit of -3 dB on Digital Volume and 0 dB on PA Volume
-		 * to reduce the risk of speaker damage until we have active
-		 * speaker protection in place.
-		 */
-		snd_soc_limit_volume(card, "WSA WSA_RX0 Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA2 WSA_RX0 Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA2 WSA_RX1 Digital Volume", 81);
-		/* The MIX paths feed the same amplifier; do not leave them at +40 dB */
-		snd_soc_limit_volume(card, "WSA WSA_RX0_MIX Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA WSA_RX1_MIX Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA2 WSA_RX0_MIX Digital Volume", 81);
-		snd_soc_limit_volume(card, "WSA2 WSA_RX1_MIX Digital Volume", 81);
-		snd_soc_limit_volume(card, "SpkrLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "SpkrRight PA Volume", 6);
-		snd_soc_limit_volume(card, "WooferLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "TweeterLeft PA Volume", 6);
-		snd_soc_limit_volume(card, "WooferRight PA Volume", 6);
-		snd_soc_limit_volume(card, "TweeterRight PA Volume", 6);
+		if (of_machine_is_compatible("microsoft,denali")) {
+			/* Require every applicable cap before exposing WSA playback. */
+			ret = x1e80100_install_spk_caps(card);
+			if (ret)
+				break;
+		} else {
+			snd_soc_limit_volume(card, "WSA WSA_RX0 Digital Volume", 81);
+			snd_soc_limit_volume(card, "WSA WSA_RX1 Digital Volume", 81);
+			snd_soc_limit_volume(card, "WSA2 WSA_RX0 Digital Volume", 81);
+			snd_soc_limit_volume(card, "WSA2 WSA_RX1 Digital Volume", 81);
+			snd_soc_limit_volume(card, "WSA WSA_RX0_MIX Digital Volume", 81);
+			snd_soc_limit_volume(card, "WSA WSA_RX1_MIX Digital Volume", 81);
+			snd_soc_limit_volume(card, "WSA2 WSA_RX0_MIX Digital Volume", 81);
+			snd_soc_limit_volume(card, "WSA2 WSA_RX1_MIX Digital Volume", 81);
+			snd_soc_limit_volume(card, "SpkrLeft PA Volume", 6);
+			snd_soc_limit_volume(card, "SpkrRight PA Volume", 6);
+			snd_soc_limit_volume(card, "WooferLeft PA Volume", 6);
+			snd_soc_limit_volume(card, "TweeterLeft PA Volume", 6);
+			snd_soc_limit_volume(card, "WooferRight PA Volume", 6);
+			snd_soc_limit_volume(card, "TweeterRight PA Volume", 6);
+		}
 		break;
 	case DISPLAY_PORT_RX_0:
 		dp_pcm_id = 0;
@@ -258,6 +319,8 @@ static void x1e80100_spk_mute(void *priv)
 
 static void x1e80100_spk_unregister(void *priv)
 {
+	x1e80100_spk_mute(priv);
+	sp11_guard_caps_ready(false);
 	sp11_guard_clear_mute(priv);
 }
 
@@ -281,6 +344,9 @@ static int x1e80100_platform_probe(struct platform_device *pdev)
 	struct x1e80100_snd_data *data;
 	struct device *dev = &pdev->dev;
 	int ret;
+
+	if (of_machine_is_compatible("microsoft,denali"))
+		sp11_guard_caps_ready(false);
 
 	card = devm_kzalloc(dev, sizeof(*card), GFP_KERNEL);
 	if (!card)
@@ -306,8 +372,11 @@ static int x1e80100_platform_probe(struct platform_device *pdev)
 		dev_warn(dev, "sp11.nospk is set, speakers are disabled\n");
 
 	ret = devm_snd_soc_register_card(dev, card);
-	if (ret)
+	if (ret) {
+		if (of_machine_is_compatible("microsoft,denali"))
+			sp11_guard_caps_ready(false);
 		return ret;
+	}
 
 	/*
 	 * Registered after the card so that the devm cleanup unhooks the mute

@@ -13,6 +13,8 @@
 #include <uapi/sound/snd_ar_tokens.h>
 #include <linux/kernel.h>
 #include <linux/wait.h>
+#include <linux/of.h>
+#include <sound/sp11-guard.h>
 #include "q6apm.h"
 #include "audioreach.h"
 
@@ -1412,10 +1414,62 @@ static const struct snd_soc_tplg_ops audioreach_tplg_ops = {
 	.dapm_route_unload	= audioreach_route_unload,
 };
 
+static int audioreach_sp11_policy(struct device *dev, bool *has_sp)
+{
+	struct device_node *chosen;
+	struct q6apm *apm = dev_get_drvdata(dev);
+	struct audioreach_module *module;
+	const char *policy;
+	int id;
+	int ret;
+
+	if (!apm) {
+		sp11_guard_select_mode(false, false);
+		return -ENODEV;
+	}
+
+	*has_sp = false;
+	mutex_lock(&apm->lock);
+	idr_for_each_entry(&apm->modules_idr, module, id) {
+		if (module->module_id == MODULE_ID_SPEAKER_PROTECTION) {
+			*has_sp = true;
+			break;
+		}
+	}
+	mutex_unlock(&apm->lock);
+
+	chosen = of_find_node_by_path("/chosen");
+	if (!chosen) {
+		dev_err(dev, "speaker policy: /chosen is unavailable\n");
+		sp11_guard_select_mode(false, false);
+		return -ENOENT;
+	}
+	ret = of_property_read_string(chosen, "sp11,speaker-policy", &policy);
+	if (ret) {
+		dev_err(dev, "speaker policy cannot be read: %d\n", ret);
+		of_node_put(chosen);
+		sp11_guard_select_mode(false, false);
+		return ret;
+	}
+
+	/* A parsed SP graph keeps the existing closed-loop gates. */
+	if (*has_sp)
+		ret = sp11_guard_select_mode(true, true);
+	else
+		ret = sp11_guard_select_mode(!strcmp(policy, "d26-open-loop-v1"), false);
+	of_node_put(chosen);
+	if (ret)
+		dev_err(dev, "speaker policy/topology combination refused (SP=%d)\n",
+			*has_sp);
+
+	return ret;
+}
+
 int audioreach_tplg_init(struct snd_soc_component *component)
 {
 	struct snd_soc_card *card = component->card;
 	struct device *dev = component->dev;
+	bool has_sp;
 	int ret;
 
 	/* Inline with Qualcomm UCM configs and linux-firmware path */
@@ -1439,9 +1493,14 @@ int audioreach_tplg_init(struct snd_soc_component *component)
 		return ret;
 	}
 
-	/* Optional closed-loop speaker protection data (Surface Pro 11) */
-	ret = audioreach_sp11_load(dev, card->driver_name, card->name);
+	if (!of_machine_is_compatible("microsoft,denali"))
+		return audioreach_sp11_load(dev, card->driver_name, card->name);
 
-	return ret;
+	/* Policy errors close only the WSA gate; microphones and DP stay usable. */
+	ret = audioreach_sp11_policy(dev, &has_sp);
+	if (ret || !has_sp)
+		return 0;
+
+	return audioreach_sp11_load(dev, card->driver_name, card->name);
 }
 EXPORT_SYMBOL_GPL(audioreach_tplg_init);

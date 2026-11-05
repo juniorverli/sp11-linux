@@ -39,6 +39,8 @@ enum sp11_guard_stream {
  */
 #if IS_ENABLED(CONFIG_SND_SOC_SP11_GUARD)
 /* Producers */
+int sp11_guard_select_mode(bool marker_valid, bool has_sp);
+void sp11_guard_caps_ready(bool ready);
 void sp11_guard_loaded(bool loaded);
 void sp11_guard_graph(bool up, bool cps_required);
 void sp11_guard_stream(enum sp11_guard_stream stream, bool start);
@@ -55,6 +57,8 @@ int sp11_guard_unmute_check(struct device *dev);
 bool sp11_guard_faulted(void);
 bool sp11_guard_nospk(void);
 #else
+static inline int sp11_guard_select_mode(bool marker_valid, bool has_sp) { return -EOPNOTSUPP; }
+static inline void sp11_guard_caps_ready(bool ready) { }
 static inline void sp11_guard_loaded(bool loaded) { }
 static inline void sp11_guard_graph(bool up, bool cps_required) { }
 static inline void sp11_guard_stream(enum sp11_guard_stream stream, bool start) { }
