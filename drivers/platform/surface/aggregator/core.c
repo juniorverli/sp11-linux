@@ -20,7 +20,9 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
+#include <linux/reboot.h>
 #include <linux/serdev.h>
+#include <linux/string.h>
 #include <linux/sysfs.h>
 #include <linux/units.h>
 
@@ -380,10 +382,79 @@ static int ssam_serdev_setup(struct acpi_device *ssh, struct serdev_device *serd
 
 /* -- Power management. ----------------------------------------------------- */
 
+/*
+ * What to tell the EC when the system is powered off or restarted. The
+ * default is the upstream behaviour. The other modes exist to find out which
+ * state the EC has to be left in for the next operating system to find the
+ * Type Cover working.
+ */
+enum ssam_shutdown_mode {
+	SSAM_SHUTDOWN_DEFAULT,	/* disable events, display-off, D0-exit */
+	SSAM_SHUTDOWN_QUIET,	/* disable events only */
+	SSAM_SHUTDOWN_SILENT,	/* send nothing */
+	SSAM_SHUTDOWN_CLEAN,	/* remove clients, then display-off, D0-exit */
+};
+
+static const char * const ssam_shutdown_mode_names[] = {
+	[SSAM_SHUTDOWN_DEFAULT] = "default",
+	[SSAM_SHUTDOWN_QUIET]   = "quiet",
+	[SSAM_SHUTDOWN_SILENT]  = "silent",
+	[SSAM_SHUTDOWN_CLEAN]   = "clean",
+};
+
+static int ssam_shutdown_mode = SSAM_SHUTDOWN_DEFAULT;
+
+static int ssam_shutdown_mode_set(const char *val, const struct kernel_param *kp)
+{
+	int mode = sysfs_match_string(ssam_shutdown_mode_names, val);
+
+	if (mode < 0)
+		return mode;
+
+	WRITE_ONCE(ssam_shutdown_mode, mode);
+	return 0;
+}
+
+static int ssam_shutdown_mode_get(char *buf, const struct kernel_param *kp)
+{
+	return sysfs_emit(buf, "%s\n",
+			  ssam_shutdown_mode_names[READ_ONCE(ssam_shutdown_mode)]);
+}
+
+static const struct kernel_param_ops ssam_shutdown_mode_ops = {
+	.set = ssam_shutdown_mode_set,
+	.get = ssam_shutdown_mode_get,
+};
+
+module_param_cb(shutdown_mode, &ssam_shutdown_mode_ops, NULL, 0644);
+MODULE_PARM_DESC(shutdown_mode,
+		 "What to send to the EC on shutdown: default, quiet (events only), silent (nothing) or clean (remove clients first)");
+
+static void ssam_notif_display_off_d0_exit(struct ssam_controller *c)
+{
+	int status;
+
+	status = ssam_ctrl_notif_display_off(c);
+	if (status)
+		ssam_err(c, "pm: display-off notification failed: %d\n", status);
+
+	status = ssam_ctrl_notif_d0_exit(c);
+	if (status)
+		ssam_err(c, "pm: D0-exit notification failed: %d\n", status);
+}
+
 static void ssam_serial_hub_shutdown(struct serdev_device *serdev)
 {
 	struct ssam_controller *c = dev_get_drvdata(&serdev->dev);
 	int status;
+
+	switch (READ_ONCE(ssam_shutdown_mode)) {
+	case SSAM_SHUTDOWN_SILENT:
+	case SSAM_SHUTDOWN_CLEAN:	/* done by the reboot notifier */
+		return;
+	default:
+		break;
+	}
 
 	/*
 	 * Try to disable notifiers, signal display-off and D0-exit, ignore any
@@ -399,13 +470,57 @@ static void ssam_serial_hub_shutdown(struct serdev_device *serdev)
 			 status);
 	}
 
-	status = ssam_ctrl_notif_display_off(c);
-	if (status)
-		ssam_err(c, "pm: display-off notification failed: %d\n", status);
+	if (READ_ONCE(ssam_shutdown_mode) == SSAM_SHUTDOWN_QUIET)
+		return;
 
-	status = ssam_ctrl_notif_d0_exit(c);
-	if (status)
-		ssam_err(c, "pm: D0-exit notification failed: %d\n", status);
+	ssam_notif_display_off_d0_exit(c);
+}
+
+#define SSAM_PLATFORM_HUB_DEV_NAME	"surface_aggregator_platform_hub.0"
+
+/*
+ * Clean shutdown, run before device shutdown starts so that the client devices
+ * can be unbound in a normal context. Remove the clients first so that each
+ * driver unregisters its notifiers and the matching events are disabled with
+ * proper reference counting, then send display-off and D0-exit like remove().
+ */
+struct ssam_reboot_nb {
+	struct notifier_block nb;
+	struct ssam_controller *ctrl;
+	struct device *dev;
+};
+
+static struct ssam_reboot_nb ssam_reboot_nb;
+
+static int ssam_reboot_notify(struct notifier_block *nb, unsigned long action,
+			      void *data)
+{
+	struct ssam_reboot_nb *rn = container_of(nb, struct ssam_reboot_nb, nb);
+	struct ssam_controller *c = rn->ctrl;
+	struct device *hub;
+	int status;
+
+	if (READ_ONCE(ssam_shutdown_mode) != SSAM_SHUTDOWN_CLEAN)
+		return NOTIFY_DONE;
+
+	/* The platform hub is registered by hand on DT systems. */
+	hub = bus_find_device_by_name(&platform_bus_type, NULL,
+				      SSAM_PLATFORM_HUB_DEV_NAME);
+	if (hub) {
+		platform_device_unregister(to_platform_device(hub));
+		put_device(hub);
+	}
+
+	ssam_remove_clients(rn->dev);
+
+	status = ssam_notifier_disable_registered(c);
+	if (status) {
+		ssam_err(c, "pm: failed to disable notifiers for shutdown: %d\n",
+			 status);
+	}
+
+	ssam_notif_display_off_d0_exit(c);
+	return NOTIFY_DONE;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -751,6 +866,14 @@ static int ssam_serial_hub_probe(struct serdev_device *serdev)
 					     "Failed to register the platform hub driver\n");
 	}
 
+	ssam_reboot_nb.ctrl = ctrl;
+	ssam_reboot_nb.dev = dev;
+	ssam_reboot_nb.nb.notifier_call = ssam_reboot_notify;
+	register_reboot_notifier(&ssam_reboot_nb.nb);
+
+	dev_info(dev, "shutdown mode: %s\n",
+		 ssam_shutdown_mode_names[READ_ONCE(ssam_shutdown_mode)]);
+
 	if (ssh)
 		acpi_dev_clear_dependencies(ssh);
 
@@ -777,6 +900,8 @@ static void ssam_serial_hub_remove(struct serdev_device *serdev)
 {
 	struct ssam_controller *ctrl = serdev_device_get_drvdata(serdev);
 	int status;
+
+	unregister_reboot_notifier(&ssam_reboot_nb.nb);
 
 	/* Clear static reference so that no one else can get a new one. */
 	ssam_clear_controller();
