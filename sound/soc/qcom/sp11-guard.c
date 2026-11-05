@@ -270,6 +270,31 @@ void sp11_guard_stream(enum sp11_guard_stream stream, bool start, const void *gr
 }
 EXPORT_SYMBOL_GPL(sp11_guard_stream);
 
+/*
+ * Measured VI calibration reported by the DSP (EVENT_ID_VI_CALIBRATION and
+ * EVENT_ID_VI_PER_SPKR_CALIBRATION). The payload layouts are taken from the
+ * Windows ACDB driver's parser (REA 2026-11-05): a count, a state where 4
+ * means success, and one R0 (Q24) per channel. A valid event is accepted as a
+ * measured (non-nominal) calibration through the existing generation path;
+ * graph identity, caps, CPS policy and the fault latch still gate unmute.
+ * An invalid event changes nothing.
+ */
+void sp11_guard_vi_calibration(const void *graph, unsigned int ch_mask, bool valid)
+{
+	u64 generation;
+
+	if (!valid || !graph || !(ch_mask & SP11_CAL_ALL_MASK))
+		return;
+	generation = sp11_guard_calibration_begin(graph);
+	if (!generation || !sp11_guard_calibrated(generation, ch_mask & SP11_CAL_ALL_MASK, false)) {
+		pr_warn("sp11-guard: measured VI calibration rejected (graph or generation)\n");
+		return;
+	}
+	pr_info("sp11-guard: measured VI calibration accepted, mask 0x%x\n",
+		ch_mask & SP11_CAL_ALL_MASK);
+}
+EXPORT_SYMBOL_GPL(sp11_guard_vi_calibration);
+
 void sp11_guard_calibration_reset(void)
 {
 	unsigned long flags;
@@ -487,6 +512,7 @@ static int sp11_guard_show(struct seq_file *s, void *unused)
 		   guard.caps_ready);
 	seq_printf(s, "degraded_fault: %d\n", sp11_guard_degraded_fault());
 	seq_printf(s, "cal_mask: 0x%x\ncal_nominal: %d\n", guard.cal_mask, guard.cal_nominal);
+	seq_printf(s, "cal_source: %s\n", guard.cal_mask ? "measured-or-file" : "none");
 	seq_printf(s, "cal_graph_matches_vi: %d\nvi_ambiguous: %d\n",
 		   sp11_guard_cal_matches_vi(), guard.vi_ambiguous);
 	seq_printf(s, "fault: %d (%s, 0x%08x)\nnospk: %d\nallow_nominal: %d\n",

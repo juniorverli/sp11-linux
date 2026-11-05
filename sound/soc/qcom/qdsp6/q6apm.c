@@ -607,7 +607,9 @@ static int graph_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 			graph->cb(client_event, hdr->token, data->payload, graph->priv);
 			break;
 		case EVENT_ID_SP_DIAGNOSTICS:
-			audioreach_sp11_event(dev, event->event_id, event + 1,
+		case EVENT_ID_VI_CALIBRATION:
+		case EVENT_ID_VI_PER_SPKR_CALIBRATION:
+			audioreach_sp11_event(dev, graph, event->event_id, event + 1,
 					      event->event_payload_size);
 			break;
 		}

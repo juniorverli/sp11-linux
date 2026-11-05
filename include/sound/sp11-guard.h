@@ -51,6 +51,7 @@ bool sp11_guard_calibrated(u64 generation, unsigned int ch_mask, bool nominal);
 void sp11_guard_sp_enabled(bool enabled);
 void sp11_guard_diagnostics_degraded(bool degraded);
 void sp11_guard_fault(const char *src, u32 code);
+void sp11_guard_vi_calibration(const void *graph, unsigned int ch_mask, bool valid);
 void sp11_guard_set_mute(void (*mute)(void *data), void *data);
 void sp11_guard_clear_mute(void *data);
 
@@ -76,6 +77,7 @@ static inline bool sp11_guard_calibrated(u64 generation, unsigned int ch_mask, b
 static inline void sp11_guard_sp_enabled(bool enabled) { }
 static inline void sp11_guard_diagnostics_degraded(bool degraded) { }
 static inline void sp11_guard_fault(const char *src, u32 code) { }
+static inline void sp11_guard_vi_calibration(const void *graph, unsigned int ch_mask, bool valid) { }
 static inline void sp11_guard_set_mute(void (*mute)(void *data), void *data) { }
 static inline void sp11_guard_clear_mute(void *data) { }
 static inline bool sp11_guard_faulted(void) { return true; }

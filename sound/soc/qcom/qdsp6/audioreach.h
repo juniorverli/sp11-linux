@@ -1081,6 +1081,8 @@ int audioreach_shmem_register_event(struct q6apm_graph *graph, int bytes, int nu
 
 /* Closed-loop speaker protection (audioreach-sp11.c) */
 #define EVENT_ID_SP_DIAGNOSTICS		0x0800138c
+#define EVENT_ID_VI_CALIBRATION		0x0800119f
+#define EVENT_ID_VI_PER_SPKR_CALIBRATION	0x08001511
 #define PARAM_ID_SP_TH_VI_R0T0_CFG	0x080011f5
 
 int audioreach_sp11_load(struct device *dev, const char *driver_name, const char *card_name);
@@ -1091,6 +1093,7 @@ int audioreach_sp11_graph_params(struct q6apm_graph *graph,
 				 const struct audioreach_module *module);
 int audioreach_sp11_register_events(struct q6apm_graph *graph,
 				    const struct audioreach_module *module);
-void audioreach_sp11_event(struct device *dev, u32 event_id, const void *payload, u32 size);
+void audioreach_sp11_event(struct device *dev, struct q6apm_graph *graph, u32 event_id,
+			   const void *payload, u32 size);
 void audioreach_sp11_graph_state(struct q6apm_graph *graph, bool started);
 #endif /* __AUDIOREACH_H__ */
