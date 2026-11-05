@@ -409,6 +409,8 @@ struct wsa_macro {
 	unsigned long active_ch_cnt[WSA_MACRO_MAX_DAIS];
 	int rx_port_value[WSA_MACRO_RX_MAX];
 	int ear_spkr_gain;
+	int ear_spkr_saved_vol;
+	bool ear_spkr_applied;
 	int spkr_gain_offset;
 	int spkr_mode;
 	u32 pcm_rate_vi;
@@ -1796,7 +1798,7 @@ static int wsa_macro_config_ear_spkr_gain(struct snd_soc_component *component,
 					  struct wsa_macro *wsa,
 					  int event, int gain_reg)
 {
-	int comp_gain_offset, val;
+	int comp_gain_offset, val, vol;
 
 	switch (wsa->spkr_mode) {
 	/* Compander gain in WSA_MACRO_SPKR_MODE1 case is 12 dB */
@@ -1817,18 +1819,28 @@ static int wsa_macro_config_ear_spkr_gain(struct snd_soc_component *component,
 		    (wsa->ear_spkr_gain != 0)) {
 			/* For example, val is -8(-12+5-1) for 4dB of gain */
 			val = comp_gain_offset + wsa->ear_spkr_gain - 1;
-			snd_soc_component_write(component, gain_reg, val);
+			/*
+			 * The RX volume is a signed 8-bit dB value and already holds
+			 * the user setting, which the machine driver may have limited.
+			 * Keep it to remember and never raise above it.
+			 */
+			vol = (s8)snd_soc_component_read(component, gain_reg);
+			wsa->ear_spkr_saved_vol = vol;
+			wsa->ear_spkr_applied = true;
+			val = min(val, vol);
+			snd_soc_component_write(component, gain_reg, val & 0xff);
 		}
 		break;
 	case SND_SOC_DAPM_POST_PMD:
 		/*
-		 * Reset RX0 volume to 0 dB if compander is enabled and
-		 * ear_spkr_gain is non-zero.
+		 * Put back the volume saved at power-up instead of forcing 0 dB,
+		 * which would exceed the limit set by the machine driver.
 		 */
-		if (wsa->comp_enabled[WSA_MACRO_COMP1] &&
-		    (gain_reg == CDC_WSA_RX0_RX_VOL_CTL) &&
-		    (wsa->ear_spkr_gain != 0)) {
-			snd_soc_component_write(component, gain_reg, 0x0);
+		if (wsa->ear_spkr_applied &&
+		    gain_reg == CDC_WSA_RX0_RX_VOL_CTL) {
+			snd_soc_component_write(component, gain_reg,
+						wsa->ear_spkr_saved_vol & 0xff);
+			wsa->ear_spkr_applied = false;
 		}
 		break;
 	}
