@@ -812,6 +812,9 @@
 
 		clocks = <&rpmhcc RPMH_RF_CLK4>;
 
+		pinctrl-0 = <&rtmr1_default>;
+		pinctrl-names = "default";
+
 		vdd-supply = <&vreg_rtmr1_1p15>;
 		vdd33-supply = <&vreg_rtmr1_3p3>;
 		vdd33-cap-supply = <&vreg_rtmr1_3p3>;
@@ -1210,6 +1213,13 @@
 
 	rtmr1_1p15_reg_en: rtmr1-1p15-reg-en-state {
 		pins = "gpio188";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	rtmr1_default: rtmr1-reset-n-active-state {
+		pins = "gpio176";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-disable;
