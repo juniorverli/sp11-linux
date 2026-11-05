@@ -16,6 +16,10 @@
 	status = "disabled";
 };
 
+&gpu {
+	status = "disabled";
+};
+
 / {
 	model = "Microsoft Surface Pro 11th Edition (LCD)";
 	compatible = "microsoft,denali-lcd", "microsoft,denali",
