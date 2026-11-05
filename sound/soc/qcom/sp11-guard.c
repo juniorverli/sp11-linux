@@ -30,8 +30,20 @@
 #include <linux/workqueue.h>
 #include <sound/sp11-guard.h>
 
+/*
+ * This file is a module (CONFIG_SND_SOC_SP11_GUARD=m). The module loader splits
+ * "sp11.allow_nominal=1" at the dot, matches "sp11" as the module name and looks
+ * for the bare parameter name; a non-empty prefix here made the stored name
+ * "sp11.allow_nominal" and the loader ignored the boot parameter ("sp11: unknown
+ * parameter 'allow_nominal' ignored", device boot 2026-11-05). Built-in builds
+ * keep the prefix so "sp11.nospk" still works on the kernel command line.
+ */
 #undef MODULE_PARAM_PREFIX
+#ifdef MODULE
+#define MODULE_PARAM_PREFIX ""
+#else
 #define MODULE_PARAM_PREFIX "sp11."
+#endif
 
 static bool nospk;
 module_param(nospk, bool, 0444);
