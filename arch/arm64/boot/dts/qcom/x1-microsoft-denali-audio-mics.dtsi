@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Surface Pro 11: opt-in sound card with the digital microphones only.
+ *
+ * The board DTS disables the sound card and the WSA SoundWire controller
+ * because the WSA8845 speaker amplifiers must not run without speaker
+ * protection. This fragment re-enables the card for capture and keeps the
+ * speaker path out of it:
+ *
+ *  - the WSA playback link and its routes are removed from the card;
+ *  - &swr0 is not touched, so it stays as the board DTS left it (disabled),
+ *    no WSA8845 is enumerated and the amplifiers are never programmed.
+ *
+ * Include this file only from a DTS whose name says it is an audio variant.
+ */
+
+&{/sound} {
+	status = "okay";
+
+	audio-routing = "VA DMIC0", "vdd-micb",
+			"VA DMIC1", "vdd-micb";
+
+	/delete-node/ wsa-dai-link;
+};

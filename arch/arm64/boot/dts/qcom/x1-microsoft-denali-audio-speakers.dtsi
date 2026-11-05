@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Surface Pro 11: opt-in sound card with the WSA8845 speakers.
+ *
+ * Only for a DTS that is explicitly named as a speaker variant, and only
+ * after the project safety rule S1 has been lifted in plan/risks.md. The
+ * default and every packaged board DTS keep /sound and &swr0 disabled.
+ *
+ * The playback path is limited in software (sound/soc/qcom/x1e80100.c caps
+ * the WSA digital volumes at -3 dB and the PA volumes at 0 dB; wsa884x.c
+ * resets the PA gain to the same 0 dB). That limit is a mitigation, not
+ * speaker protection.
+ */
+
+&{/sound} {
+	status = "okay";
+};
+
+&swr0 {
+	status = "okay";
+};
