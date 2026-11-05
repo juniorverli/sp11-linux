@@ -4619,24 +4619,73 @@ struct media_pad *camss_find_sensor_pad(struct media_entity *entity)
 	}
 }
 
+/*
+ * A C-PHY trio carries 16 bits in 7 symbols, on average 2.2857 bits per
+ * symbol. The Qualcomm CSIPHY reference tables derive the lane bit rate from
+ * the symbol rate at 2.28 bits per symbol, so the same 57/25 is used for the
+ * CSIPHY and CSID clock rates here, 0.25% below 16/7. The symbol rate class
+ * of the CSIPHY comes from the link frequency alone and does not use this.
+ */
+#define CAMSS_CPHY_BITS_PER_SYMBOL_NUM		57
+#define CAMSS_CPHY_BITS_PER_SYMBOL_DEN		25
+
 /**
  * camss_get_link_freq - Get link frequency from sensor
  * @entity: Media entity in the current pipeline
  * @bpp: Number of bits per pixel for the current format
- * @lanes: Number of lanes in the link to the sensor
+ * @lanes: Number of lanes (D-PHY) or trios (C-PHY) in the link to the sensor
+ * @cphy: The link is C-PHY
+ *
+ * The link frequency is 1 / (2 * UI) as defined for V4L2_CID_LINK_FREQ. On
+ * D-PHY the UI is one bit time, on C-PHY it is one symbol time, so the C-PHY
+ * symbol rate is twice the link frequency.
  *
  * Return link frequency on success or a negative error code otherwise
  */
 s64 camss_get_link_freq(struct media_entity *entity, unsigned int bpp,
-			unsigned int lanes)
+			unsigned int lanes, bool cphy)
 {
 	struct media_pad *sensor_pad;
+	unsigned int mul = bpp;
+	unsigned int div = 2 * lanes;
 
 	sensor_pad = camss_find_sensor_pad(entity);
 	if (!sensor_pad)
 		return -ENODEV;
 
-	return v4l2_get_link_freq(sensor_pad, bpp, 2 * lanes);
+	/*
+	 * Without a link frequency control the frequency is derived from the
+	 * pixel rate. On C-PHY one symbol carries 2.28 bits.
+	 */
+	if (cphy) {
+		mul *= CAMSS_CPHY_BITS_PER_SYMBOL_DEN;
+		div *= CAMSS_CPHY_BITS_PER_SYMBOL_NUM;
+	}
+
+	return v4l2_get_link_freq(sensor_pad, mul, div);
+}
+
+/**
+ * camss_get_bit_clock - Convert a link frequency to the equivalent D-PHY one
+ * @link_freq: Link frequency as returned by camss_get_link_freq()
+ * @cphy: The link is C-PHY
+ *
+ * The CSIPHY and CSID clock rates are derived from the bit rate of a lane.
+ * On C-PHY that is the symbol rate times 2.28 bits per symbol, which is the
+ * link frequency a D-PHY would need for the same bit rate.
+ *
+ * Return the equivalent D-PHY link frequency, or 0 if @link_freq is not valid
+ */
+u64 camss_get_bit_clock(s64 link_freq, bool cphy)
+{
+	if (link_freq <= 0)
+		return 0;
+
+	if (!cphy)
+		return link_freq;
+
+	return div_u64(link_freq * CAMSS_CPHY_BITS_PER_SYMBOL_NUM,
+		       CAMSS_CPHY_BITS_PER_SYMBOL_DEN);
 }
 
 /*

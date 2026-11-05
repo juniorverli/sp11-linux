@@ -145,9 +145,10 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 				csiphy->fmt[MSM_CSIPHY_PAD_SINK].code);
 	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
 
-	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
-	if (link_freq < 0)
-		link_freq  = 0;
+	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes,
+					csiphy->cfg.csi2->lane_cfg.cphy);
+	link_freq = camss_get_bit_clock(link_freq,
+					csiphy->cfg.csi2->lane_cfg.cphy);
 
 	for (i = 0; i < csiphy->nclocks; i++) {
 		struct camss_clock *clock = &csiphy->clock[i];
@@ -272,7 +273,8 @@ static int csiphy_stream_on(struct csiphy_device *csiphy)
 	u8 num_lanes = csiphy->cfg.csi2->lane_cfg.num_data;
 	u8 val;
 
-	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes);
+	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes,
+					cfg->csi2->lane_cfg.cphy);
 
 	if (link_freq < 0) {
 		dev_err(csiphy->camss->dev,
