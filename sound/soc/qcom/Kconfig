@@ -240,10 +240,19 @@ config SND_SOC_SC7280
 	  SC7280 SoC-based systems.
 	  Say Y or M if you want to use audio device on this SoCs.
 
+config SND_SOC_SP11_GUARD
+	tristate "Speaker protection guard for the Surface Pro 11"
+	help
+	  Kernel-side gate for the WSA884x speakers of the Surface Pro 11.
+	  Playback is refused until the closed-loop speaker protection is
+	  running, calibrated and fault free. Boot parameters: sp11.nospk,
+	  sp11.allow_nominal. Say Y or M on that machine.
+
 config SND_SOC_X1E80100
 	tristate "SoC Machine driver for X1E80100 boards"
 	depends on QCOM_APR && SOUNDWIRE
 	depends on COMMON_CLK
+	select SND_SOC_SP11_GUARD
 	select SND_SOC_QDSP6
 	select SND_SOC_QCOM_COMMON
 	select SND_SOC_QCOM_SDW
