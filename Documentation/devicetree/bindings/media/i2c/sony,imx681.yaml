@@ -1,0 +1,122 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/sony,imx681.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Sony IMX681 CMOS image sensor
+
+maintainers:
+  - juniorverli <25966843+juniorverli@users.noreply.github.com>
+
+description:
+  The Sony IMX681 is a RAW Bayer image sensor with a MIPI CSI-2 C-PHY output.
+  It has no public register documentation, so the driver does not contain any
+  sensor register value. The init, stream on, stream off and per-mode register
+  sequences, the identification register, the exposure, gain and frame length
+  registers and the media bus code (the Bayer order) are read from a register
+  blob, named by firmware-name, that is generated locally. The blob format is
+  documented in drivers/media/i2c/sensor-regblob.h.
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    const: sony,imx681
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    description: Input clock, 19.2 MHz.
+    maxItems: 1
+
+  avdd-supply:
+    description: Analog supply.
+
+  dovdd-supply:
+    description: Interface and digital I/O supply.
+
+  reset-gpios:
+    description: Active low sensor reset.
+    maxItems: 1
+
+  firmware-name:
+    maxItems: 1
+    description:
+      Name of the register blob, loaded with request_firmware().
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    unevaluatedProperties: false
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+        properties:
+          bus-type:
+            const: 1
+          data-lanes:
+            description: Trios of the C-PHY link.
+            minItems: 1
+            maxItems: 3
+          link-frequencies:
+            description:
+              Link frequencies of the modes in the register blob. For a C-PHY
+              link this is half the symbol rate.
+            minItems: 1
+            maxItems: 8
+        required:
+          - bus-type
+          - data-lanes
+          - link-frequencies
+    required:
+      - endpoint
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - avdd-supply
+  - dovdd-supply
+  - firmware-name
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/qcom,x1e80100-camcc.h>
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        camera@10 {
+            compatible = "sony,imx681";
+            reg = <0x10>;
+
+            clocks = <&camcc CAM_CC_MCLK4_CLK>;
+
+            reset-gpios = <&tlmm 237 GPIO_ACTIVE_LOW>;
+
+            avdd-supply = <&vreg_l7b_2p8>;
+            dovdd-supply = <&vreg_l3m_1p8>;
+
+            firmware-name = "imx681-mshw0490.bin";
+
+            leds = <&camera_indicator>;
+            led-names = "privacy";
+
+            port {
+                endpoint {
+                    bus-type = <1>;
+                    data-lanes = <1>;
+                    link-frequencies = /bits/ 64 <1200000000>;
+                    remote-endpoint = <&camss_csiphy2_ep>;
+                };
+            };
+        };
+    };
