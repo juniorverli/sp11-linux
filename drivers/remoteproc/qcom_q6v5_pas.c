@@ -34,6 +34,11 @@
 #include "qcom_q6v5.h"
 #include "remoteproc_internal.h"
 
+static int keep_proxy_pds = -1;
+module_param(keep_proxy_pds, int, 0644);
+MODULE_PARM_DESC(keep_proxy_pds,
+		 "Keep the proxy power domain votes after the handover IRQ until the remote processor stops: 1 keep, 0 release, -1 driver default (kept only for the Surface Pro 11 CDSP). Read at each handover: change it between stop and start (default: -1)");
+
 #define QCOM_PAS_DECRYPT_SHUTDOWN_DELAY_MS	100
 
 #define MAX_ASSIGN_COUNT 3
@@ -64,6 +69,7 @@ struct qcom_pas_data {
 	int region_assign_vmid;
 	bool early_boot;
 	bool needs_tzmem;
+	bool keep_proxy_pds_denali;
 };
 
 struct qcom_pas {
@@ -81,6 +87,8 @@ struct qcom_pas {
 	struct device *proxy_pds[3];
 
 	int proxy_pd_count;
+	bool proxy_pds_held;
+	bool keep_proxy_pds_default;
 
 	const char *dtb_firmware_name;
 	int pas_id;
@@ -388,17 +396,46 @@ disable_irqs:
 	return ret;
 }
 
-static void qcom_pas_handover(struct qcom_q6v5 *q6v5)
+/*
+ * Release what the remote processor needed only until it took over its own
+ * resources. With @keep the proxy power domain votes stay and are dropped
+ * when the remote processor stops.
+ */
+static void qcom_pas_release_proxy(struct qcom_pas *pas, bool keep)
 {
-	struct qcom_pas *pas = container_of(q6v5, struct qcom_pas, q6v5);
-
 	if (pas->px_supply)
 		regulator_disable(pas->px_supply);
 	if (pas->cx_supply)
 		regulator_disable(pas->cx_supply);
 	clk_disable_unprepare(pas->aggre2_clk);
 	clk_disable_unprepare(pas->xo);
+
+	if (keep) {
+		pas->proxy_pds_held = true;
+		return;
+	}
+
 	qcom_pas_pds_disable(pas, pas->proxy_pds, pas->proxy_pd_count);
+}
+
+static void qcom_pas_handover(struct qcom_q6v5 *q6v5)
+{
+	struct qcom_pas *pas = container_of(q6v5, struct qcom_pas, q6v5);
+	int param = READ_ONCE(keep_proxy_pds);
+	bool keep;
+
+	if (param < 0)
+		keep = pas->keep_proxy_pds_default;
+	else
+		keep = param > 0;
+
+	keep = keep && pas->proxy_pd_count;
+
+	dev_info(pas->dev, "handover: proxy power domains %s\n",
+		 keep ? (param < 0 ? "kept (driver default)" : "kept (module parameter)") :
+		 "released");
+
+	qcom_pas_release_proxy(pas, keep);
 }
 
 static int qcom_pas_stop(struct rproc *rproc)
@@ -433,8 +470,13 @@ static int qcom_pas_stop(struct rproc *rproc)
 	qcom_pas_unmap_carveout(rproc, pas->mem_phys, pas->mem_size);
 
 	handover = qcom_q6v5_unprepare(&pas->q6v5);
-	if (handover)
-		qcom_pas_handover(&pas->q6v5);
+	if (handover) {
+		/* No handover yet: the start votes are still held, drop them */
+		qcom_pas_release_proxy(pas, false);
+	} else if (pas->proxy_pds_held) {
+		qcom_pas_pds_disable(pas, pas->proxy_pds, pas->proxy_pd_count);
+		pas->proxy_pds_held = false;
+	}
 
 	if (pas->smem_host_id)
 		ret = qcom_smem_bust_hwspin_lock_by_host(pas->smem_host_id);
@@ -907,6 +949,8 @@ static int qcom_pas_probe(struct platform_device *pdev)
 	if (ret < 0)
 		goto unassign_mem;
 	pas->proxy_pd_count = ret;
+	pas->keep_proxy_pds_default = desc->keep_proxy_pds_denali &&
+				      of_machine_is_compatible("microsoft,denali");
 
 	ret = qcom_q6v5_init(&pas->q6v5, pdev, rproc, desc->crash_reason_smem,
 			     desc->load_state, qcom_pas_handover);
@@ -1280,6 +1324,7 @@ static const struct qcom_pas_data x1e80100_cdsp_resource = {
 	.ssr_name = "cdsp",
 	.sysmon_name = "cdsp",
 	.ssctl_id = 0x17,
+	.keep_proxy_pds_denali = true,
 };
 
 static const struct qcom_pas_data sm8350_cdsp_resource = {
