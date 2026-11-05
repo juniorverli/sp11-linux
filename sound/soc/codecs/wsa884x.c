@@ -747,6 +747,12 @@ struct wsa884x_priv {
 	int active_ports;
 	int dev_mode;
 	bool hw_init;
+	/* Board settings from the device tree */
+	u32 battery_cells;
+	u32 load_ohms;
+	bool internal_boost;
+	u32 vsense_atten_db;
+	u32 isense_gain_db;
 	/*
 	 * Protects temperature reading code (related to speaker protection) and
 	 * fields: temperature and pa_on.
@@ -1464,6 +1470,29 @@ static const struct reg_sequence wsa884x_reg_init[] = {
 	{ WSA884X_OTP_REG_40, FIELD_PREP_CONST(WSA884X_OTP_REG_40_ISENSE_RESCAL_MASK, 0x8) },
 };
 
+static unsigned int wsa884x_isense_from_db(u32 db)
+{
+	switch (db) {
+	case 6:
+		return ISENSE_6_DB;
+	case 15:
+		return ISENSE_15_DB;
+	case 18:
+		return ISENSE_18_DB;
+	default:
+		return ISENSE_12_DB;
+	}
+}
+
+/* VSENSE_M12_DB to VSENSE_M24_DB step by 3 dB */
+static unsigned int wsa884x_vsense_from_db(u32 db)
+{
+	if (db < 12 || db > 24)
+		return VSENSE_M24_DB;
+
+	return (db - 12) / 3;
+}
+
 static void wsa884x_set_gain_parameters(struct wsa884x_priv *wsa884x)
 {
 	struct regmap *regmap = wsa884x->regmap;
@@ -1487,8 +1516,8 @@ static void wsa884x_set_gain_parameters(struct wsa884x_priv *wsa884x)
 		/* WSA884X_SPEAKER */
 		comp_offset = COMP_OFFSET0;
 		min_gain = G_0_DB;
-		igain = ISENSE_12_DB;
-		vgain = VSENSE_M24_DB;
+		igain = wsa884x_isense_from_db(wsa884x->isense_gain_db);
+		vgain = wsa884x_vsense_from_db(wsa884x->vsense_atten_db);
 	}
 
 	regmap_update_bits(regmap, WSA884X_ISENSE2,
@@ -1516,6 +1545,44 @@ static void wsa884x_set_gain_parameters(struct wsa884x_priv *wsa884x)
 	}
 }
 
+/*
+ * Protection settings that depend on the battery stack, the load and the boost
+ * type. Values are the documented hardware settings of the amplifier, taken
+ * from the vendor's two-cell configuration of the Surface Pro 11.
+ */
+static void wsa884x_apply_board_settings(struct wsa884x_priv *wsa884x, unsigned int *wo_ctl_0)
+{
+	struct regmap *regmap = wsa884x->regmap;
+
+	if (wsa884x->battery_cells == 2) {
+		/* Two-cell stack: no 1S low-battery shift, 2S thresholds */
+		regmap_write(regmap, WSA884X_TOP_CTRL1,
+			     0xd3 & ~WSA884X_TOP_CTRL1_OCP_LOWVBAT_ITH_EN_MASK);
+		regmap_write(regmap, WSA884X_BOP1_PROG, 0x22);
+		regmap_write(regmap, WSA884X_BOP2_PROG,
+			     FIELD_PREP(WSA884X_BOP2_PROG_BOP2_VTH_MASK, 0x4) |
+			     FIELD_PREP(WSA884X_BOP2_PROG_BOP2_HYST_MASK, 0x4));
+		regmap_write(regmap, WSA884X_UVLO_PROG, 0x33);
+		regmap_write(regmap, WSA884X_UVLO_PROG1, 0x60);
+		regmap_write(regmap, WSA884X_DAC_VCM_CTRL_REG2, 0x06);
+		regmap_write(regmap, WSA884X_DAC_VCM_CTRL_REG3, 0x14);
+		regmap_write(regmap, WSA884X_DAC_VCM_CTRL_REG4, 0x19);
+		regmap_write(regmap, WSA884X_DAC_VCM_CTRL_REG5, 0x1b);
+		regmap_write(regmap, WSA884X_DAC_VCM_CTRL_REG6, 0x1c);
+		regmap_write(regmap, WSA884X_DAC_VCM_CTRL_REG7, 0x02);
+		regmap_write(regmap, WSA884X_CLSH_V_HD_PA, 0x13);
+		*wo_ctl_0 |= FIELD_PREP(WSA884X_ANA_WO_CTL_0_VPHX_SYS_EN_MASK, 0x2);
+	}
+
+	if (wsa884x->load_ohms == 4 || wsa884x->load_ohms == 6)
+		regmap_write(regmap, WSA884X_OCP_CTL, 0xf6);
+
+	if (wsa884x->internal_boost)
+		regmap_update_bits(regmap, WSA884X_OTP_REG_38,
+				   WSA884X_OTP_REG_38_BST_CFG_SEL_MASK,
+				   FIELD_PREP(WSA884X_OTP_REG_38_BST_CFG_SEL_MASK, 0x1));
+}
+
 static void wsa884x_init(struct wsa884x_priv *wsa884x)
 {
 	unsigned int wo_ctl_0;
@@ -1538,6 +1605,7 @@ static void wsa884x_init(struct wsa884x_priv *wsa884x)
 	else
 		wo_ctl_0 |= FIELD_PREP(WSA884X_ANA_WO_CTL_0_PA_AUX_GAIN_MASK,
 				       WSA884X_ANA_WO_CTL_0_PA_AUX_0_DB);
+	wsa884x_apply_board_settings(wsa884x, &wo_ctl_0);
 	regmap_write(wsa884x->regmap, WSA884X_ANA_WO_CTL_0, wo_ctl_0);
 
 	/*
@@ -1702,6 +1770,12 @@ static void wsa884x_spkr_post_pmu(struct snd_soc_component *component,
 			curr_limit = 0x9;
 		else
 			curr_limit = 0x15;
+
+		/* Internal boost: use the converter's own limit, no override */
+		if (wsa884x->internal_boost && wsa884x->dev_mode != WSA884X_RECEIVER) {
+			curr_ovrd_en = 0x0;
+			curr_limit = 0x11;
+		}
 	}
 	snd_soc_component_write_field(component, WSA884X_CURRENT_LIMIT,
 				      WSA884X_CURRENT_LIMIT_CURRENT_LIMIT_OVRD_EN_MASK,
@@ -2095,6 +2169,17 @@ static int wsa884x_probe(struct sdw_slave *pdev,
 	wsa884x->slave = pdev;
 	wsa884x->dev = dev;
 	wsa884x->dev_mode = WSA884X_SPEAKER;
+	wsa884x->battery_cells = 1;
+	wsa884x->load_ohms = 8;
+	wsa884x->vsense_atten_db = 24;
+	wsa884x->isense_gain_db = 12;
+	device_property_read_u32(dev, "qcom,battery-stack-cells", &wsa884x->battery_cells);
+	device_property_read_u32(dev, "qcom,load-ohms", &wsa884x->load_ohms);
+	device_property_read_u32(dev, "qcom,vsense-attenuation-db", &wsa884x->vsense_atten_db);
+	device_property_read_u32(dev, "qcom,isense-gain-db", &wsa884x->isense_gain_db);
+	wsa884x->internal_boost = device_property_read_bool(dev, "qcom,internal-boost");
+	if (wsa884x->battery_cells < 1 || wsa884x->battery_cells > 2)
+		return dev_err_probe(dev, -EINVAL, "invalid qcom,battery-stack-cells\n");
 	wsa884x->sconfig.ch_count = 1;
 	wsa884x->sconfig.bps = 1;
 	wsa884x->sconfig.direction = SDW_DATA_DIR_RX;
