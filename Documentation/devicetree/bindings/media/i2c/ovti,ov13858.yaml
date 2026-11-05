@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/ovti,ov13858.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: OmniVision OV13858 CMOS image sensor
+
+maintainers:
+  - Sakari Ailus <sakari.ailus@linux.intel.com>
+
+description:
+  The OV13858 outputs RAW10 Bayer data on a four-lane CSI-2 D-PHY link
+  and uses a 19.2 MHz input clock. Image processing is external. The common
+  properties of video-interface-devices.yaml apply, including the leds and
+  led-names = "privacy" pair that selects a privacy LED.
+
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
+properties:
+  compatible:
+    const: ovti,ov13858
+
+  reg:
+    maxItems: 1
+
+  clocks:
+    maxItems: 1
+
+  dovdd-supply:
+    description: I/O supply.
+
+  dvdd-supply:
+    description: Digital core supply.
+
+  avdd-supply:
+    description: Analog supply.
+
+  reset-gpios:
+    description: Active low sensor reset.
+    maxItems: 1
+
+  port:
+    $ref: /schemas/graph.yaml#/$defs/port-base
+    unevaluatedProperties: false
+    properties:
+      endpoint:
+        $ref: /schemas/media/video-interfaces.yaml#
+        unevaluatedProperties: false
+        properties:
+          bus-type:
+            const: 4
+          data-lanes:
+            minItems: 4
+            maxItems: 4
+          link-frequencies:
+            minItems: 2
+            maxItems: 2
+        required:
+          - data-lanes
+          - link-frequencies
+    required:
+      - endpoint
+
+required:
+  - compatible
+  - reg
+  - clocks
+  - dovdd-supply
+  - dvdd-supply
+  - avdd-supply
+  - port
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/qcom,x1e80100-camcc.h>
+    #include <dt-bindings/gpio/gpio.h>
+
+    i2c {
+        #address-cells = <1>;
+        #size-cells = <0>;
+
+        camera@10 {
+            compatible = "ovti,ov13858";
+            reg = <0x10>;
+
+            clocks = <&camcc CAM_CC_MCLK1_CLK>;
+
+            reset-gpios = <&tlmm 110 GPIO_ACTIVE_LOW>;
+
+            dovdd-supply = <&vreg_l6m_1p8>;
+            dvdd-supply = <&vreg_l1m_1p2>;
+            avdd-supply = <&vreg_l5m_2p8>;
+
+            leds = <&camera_indicator>;
+            led-names = "privacy";
+
+            port {
+                endpoint {
+                    bus-type = <4>;
+                    data-lanes = <1 2 3 4>;
+                    link-frequencies = /bits/ 64 <270000000 540000000>;
+                    remote-endpoint = <&camss_csiphy1_ep>;
+                };
+            };
+        };
+    };
