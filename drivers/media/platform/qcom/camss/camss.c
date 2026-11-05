@@ -4622,9 +4622,8 @@ struct media_pad *camss_find_sensor_pad(struct media_entity *entity)
 /*
  * A C-PHY trio carries 16 bits in 7 symbols, on average 2.2857 bits per
  * symbol. The Qualcomm CSIPHY reference tables derive the lane bit rate from
- * the symbol rate at 2.28 bits per symbol, so the same 57/25 is used for the
- * CSIPHY and CSID clock rates here, 0.25% below 16/7. The symbol rate class
- * of the CSIPHY comes from the link frequency alone and does not use this.
+ * the symbol rate at 2.28 bits per symbol, 0.25% below 16/7. This factor
+ * is used only for the pixel-rate fallback, not for hardware clock votes.
  */
 #define CAMSS_CPHY_BITS_PER_SYMBOL_NUM		57
 #define CAMSS_CPHY_BITS_PER_SYMBOL_DEN		25
@@ -4663,29 +4662,6 @@ s64 camss_get_link_freq(struct media_entity *entity, unsigned int bpp,
 	}
 
 	return v4l2_get_link_freq(sensor_pad, mul, div);
-}
-
-/**
- * camss_get_bit_clock - Convert a link frequency to the equivalent D-PHY one
- * @link_freq: Link frequency as returned by camss_get_link_freq()
- * @cphy: The link is C-PHY
- *
- * The CSIPHY and CSID clock rates are derived from the bit rate of a lane.
- * On C-PHY that is the symbol rate times 2.28 bits per symbol, which is the
- * link frequency a D-PHY would need for the same bit rate.
- *
- * Return the equivalent D-PHY link frequency, or 0 if @link_freq is not valid
- */
-u64 camss_get_bit_clock(s64 link_freq, bool cphy)
-{
-	if (link_freq <= 0)
-		return 0;
-
-	if (!cphy)
-		return link_freq;
-
-	return div_u64(link_freq * CAMSS_CPHY_BITS_PER_SYMBOL_NUM,
-		       CAMSS_CPHY_BITS_PER_SYMBOL_DEN);
 }
 
 /*

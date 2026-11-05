@@ -548,7 +548,8 @@ static int csid_set_clock_rates(struct csid_device *csid)
 				 csid->fmt[MSM_CSIPHY_PAD_SINK].code);
 	link_freq = camss_get_link_freq(&csid->subdev.entity, fmt->bpp,
 					csid->phy.lane_cnt, csid->phy.cphy);
-	link_freq = camss_get_bit_clock(link_freq, csid->phy.cphy);
+	if (link_freq < 0)
+		link_freq = 0;
 
 	for (i = 0; i < csid->nclocks; i++) {
 		struct camss_clock *clock = &csid->clock[i];
@@ -556,8 +557,11 @@ static int csid_set_clock_rates(struct csid_device *csid)
 		if (!strcmp(clock->name, "csi0") ||
 		    !strcmp(clock->name, "csi1") ||
 		    !strcmp(clock->name, "csi2") ||
-		    !strcmp(clock->name, "csi3")) {
-			u64 min_rate = link_freq / 4;
+		    !strcmp(clock->name, "csi3") ||
+		    (csid->phy.cphy && (!strcmp(clock->name, "csid") ||
+					!strcmp(clock->name, "csid_csiphy_rx")))) {
+			/* Use the Hamoa nominal vote for C-PHY. */
+			u64 min_rate = csid->phy.cphy ? 0 : link_freq / 4;
 			long rate;
 
 			camss_add_clock_margin(&min_rate);
@@ -584,6 +588,8 @@ static int csid_set_clock_rates(struct csid_device *csid)
 				return -EINVAL;
 			}
 
+			if (csid->phy.cphy)
+				dev_dbg(dev, "CSID %s rate %ld Hz\n", clock->name, rate);
 			ret = clk_set_rate(clock->clk, rate);
 			if (ret < 0) {
 				dev_err(dev, "clk set rate failed: %d\n", ret);

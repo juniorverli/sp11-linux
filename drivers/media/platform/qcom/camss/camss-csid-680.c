@@ -122,7 +122,7 @@
 #define		CSI2_RX_CAPTURE_CTRL_LONG_PKT_DT		GENMASK(9, 4)
 #define		CSI2_RX_CAPTURE_CTRL_LONG_PKT_VC		GENMASK(14, 10)
 #define		CSI2_RX_CAPTURE_CTRL_SHORT_PKT_VC		GENMASK(19, 15)
-#define		CSI2_RX_CAPTURE_CTRL_CPHY_PKT_DT		GENMASK(20, 25)
+#define		CSI2_RX_CAPTURE_CTRL_CPHY_PKT_DT		GENMASK(25, 20)
 #define		CSI2_RX_CAPTURE_CTRL_CPHY_PKT_VC		GENMASK(30, 26)
 
 #define CSID_CSI2_RX_TOTAL_PKTS_RCVD				0x240
@@ -242,6 +242,21 @@ static void __csid_configure_rdi_stream(struct csid_device *csid, u8 enable, u8 
 	u8 lane_cnt = csid->phy.lane_cnt;
 	u8 dt_id;
 	u32 val;
+
+	if (csid->phy.cphy) {
+		val = 0;
+		if (enable) {
+			val = CSI2_RX_CAPTURE_CTRL_LONG_PKT_EN |
+			      CSI2_RX_CAPTURE_CTRL_CPHY_PKT_EN |
+			      FIELD_PREP(CSI2_RX_CAPTURE_CTRL_LONG_PKT_DT, format->data_type) |
+			      FIELD_PREP(CSI2_RX_CAPTURE_CTRL_LONG_PKT_VC, vc) |
+			      FIELD_PREP(CSI2_RX_CAPTURE_CTRL_CPHY_PKT_DT, format->data_type) |
+			      FIELD_PREP(CSI2_RX_CAPTURE_CTRL_CPHY_PKT_VC, vc);
+		}
+		writel(val, csid->base + CSID_CSI2_RX_CAPTURE_CTRL);
+		dev_dbg(csid->camss->dev, "CSID%d C-PHY capture control %#x\n",
+			csid->id, val);
+	}
 
 	if (!lane_cnt)
 		lane_cnt = 4;

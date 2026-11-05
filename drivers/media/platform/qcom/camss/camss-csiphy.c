@@ -147,14 +147,22 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 
 	link_freq = camss_get_link_freq(&csiphy->subdev.entity, bpp, num_lanes,
 					csiphy->cfg.csi2->lane_cfg.cphy);
-	link_freq = camss_get_bit_clock(link_freq,
-					csiphy->cfg.csi2->lane_cfg.cphy);
+	if (csiphy->cfg.csi2->lane_cfg.cphy) {
+		/* Faster classes need separate clock validation. */
+		if (link_freq <= 0 || link_freq > 1250000000LL) {
+			dev_err(dev, "Unsupported C-PHY link frequency: %lld\n", link_freq);
+			return -EINVAL;
+		}
+	} else if (link_freq < 0) {
+		link_freq = 0;
+	}
 
 	for (i = 0; i < csiphy->nclocks; i++) {
 		struct camss_clock *clock = &csiphy->clock[i];
 
 		if (csiphy->rate_set[i]) {
-			u64 min_rate = link_freq / 4;
+			/* Use the Hamoa nominal votes for C-PHY. */
+			u64 min_rate = csiphy->cfg.csi2->lane_cfg.cphy ? 0 : link_freq / 4;
 			long round_rate;
 
 			camss_add_clock_margin(&min_rate);
@@ -181,6 +189,8 @@ static int csiphy_set_clock_rates(struct csiphy_device *csiphy)
 				return -EINVAL;
 			}
 
+			if (csiphy->cfg.csi2->lane_cfg.cphy)
+				dev_dbg(dev, "CSIPHY %s rate %ld Hz\n", clock->name, round_rate);
 			csiphy->timer_clk_rate = round_rate;
 
 			ret = clk_set_rate(clock->clk, csiphy->timer_clk_rate);
