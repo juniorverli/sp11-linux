@@ -482,7 +482,9 @@ static void audioreach_populate_graph(struct q6apm *apm,
 void *audioreach_alloc_graph_pkt(struct q6apm *apm,
 				 const struct audioreach_graph_info *info)
 {
-	int payload_size, sg_sz, cont_sz, ml_sz, mp_sz, mc_sz;
+	int payload_size, sg_sz, cl_sz = 0, cont_sz, ml_sz, mp_sz, mc_sz;
+	struct apm_mod_control_links_params *clink_params;
+	unsigned int num_control_links;
 	struct apm_module_param_data  *param_data;
 	struct apm_container_params *cont_params;
 	struct audioreach_container *container;
@@ -532,7 +534,12 @@ void *audioreach_alloc_graph_pkt(struct q6apm *apm,
 	mp_sz = APM_MOD_PROP_PSIZE(mprop, num_modules);
 	mc_sz =	APM_MOD_CONN_PSIZE(mcon, num_connections);
 
-	payload_size = sg_sz + cont_sz + ml_sz + mp_sz + mc_sz;
+	/* Control links of the closed-loop speaker protection, if this graph holds an owner */
+	num_control_links = audioreach_sp11_count_links(info);
+	if (num_control_links)
+		cl_sz = APM_MOD_CTRL_LINK_PSIZE(clink_params, num_control_links);
+
+	payload_size = sg_sz + cont_sz + ml_sz + mp_sz + mc_sz + cl_sz;
 	pkt = audioreach_alloc_apm_cmd_pkt(payload_size, APM_CMD_GRAPH_OPEN, 0);
 	if (IS_ERR(pkt))
 		return pkt;
@@ -583,6 +590,17 @@ void *audioreach_alloc_graph_pkt(struct q6apm *apm,
 	param_data->param_size = mc_sz - APM_MODULE_PARAM_DATA_SIZE;
 	params.mod_conn_list_data->num_connections = num_connections;
 	p += mc_sz;
+
+	if (num_control_links) {
+		clink_params = p;
+		param_data = &clink_params->param_data;
+		param_data->module_instance_id = APM_MODULE_INSTANCE_ID;
+		param_data->param_id = APM_PARAM_ID_MODULE_CTRL_LINK_CFG;
+		param_data->param_size = cl_sz - APM_MODULE_PARAM_DATA_SIZE;
+		clink_params->num_ctrl_link_cfg =
+			audioreach_sp11_fill_links(info, clink_params->link_obj);
+		p += cl_sz;
+	}
 
 	audioreach_populate_graph(apm, info, &params, sg_list, num_sub_graphs);
 
@@ -1516,14 +1534,25 @@ int audioreach_set_media_format(struct q6apm_graph *graph,
 		rc = audioreach_gapless_set_media_format(graph, module, cfg);
 		break;
 	case MODULE_ID_SPEAKER_PROTECTION:
-		rc = audioreach_speaker_protection(graph, module,
-						   PARAM_ID_SP_OP_MODE_NORMAL);
+		rc = audioreach_sp11_graph_params(graph, module);
+		if (!rc)
+			rc = audioreach_speaker_protection(graph, module,
+							   PARAM_ID_SP_OP_MODE_NORMAL);
 		if (!rc)
 			rc = audioreach_module_enable(graph, module, true);
+		if (!rc)
+			rc = audioreach_sp11_register_events(graph, module);
 
 		break;
 	case MODULE_ID_SPEAKER_PROTECTION_VI:
-		rc = audioreach_speaker_protection_vi(graph, module, cfg);
+		rc = audioreach_sp11_graph_params(graph, module);
+		if (!rc)
+			rc = audioreach_speaker_protection_vi(graph, module, cfg);
+		if (!rc)
+			rc = audioreach_module_enable(graph, module, true);
+		break;
+	case MODULE_ID_CPS_DATA_ROUTER:
+		rc = audioreach_sp11_graph_params(graph, module);
 		if (!rc)
 			rc = audioreach_module_enable(graph, module, true);
 		break;

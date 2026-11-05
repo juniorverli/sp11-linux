@@ -35,6 +35,7 @@ struct q6apm_graph;
 #define MODULE_ID_DISPLAY_PORT_SINK	0x07001069
 #define MODULE_ID_SPEAKER_PROTECTION	0x070010E2
 #define MODULE_ID_SPEAKER_PROTECTION_VI	0x070010E3
+#define MODULE_ID_CPS_DATA_ROUTER	0x070010E4
 #define MODULE_ID_OPUS_DEC		0x07001174
 #define MODULE_ID_AUDIO_IF_SINK		0x0700117C
 #define MODULE_ID_AUDIO_IF_SOURCE	0x0700117D
@@ -437,6 +438,32 @@ struct apm_prop_data {
 	uint32_t prop_id;
 	uint32_t prop_size;
 } __packed;
+
+/*
+ * Inter-module control (IMCL) links, graph property 0x08001061. Each link joins
+ * a control port of two modules and carries one intent.
+ */
+#define APM_PARAM_ID_MODULE_CTRL_LINK_CFG		0x08001061
+#define APM_MODULE_PROP_ID_CTRL_LINK_INTENT_LIST	0x08001062
+
+struct apm_control_link_obj {
+	u32 peer1_mod_inst_id;
+	u32 peer1_mod_port_id;
+	u32 peer2_mod_inst_id;
+	u32 peer2_mod_port_id;
+	u32 num_props;
+	struct apm_prop_data intent_data;
+	u32 num_intents;
+	u32 intent_id;
+} __packed;
+
+struct apm_mod_control_links_params {
+	struct apm_module_param_data param_data;
+	u32 num_ctrl_link_cfg;
+	struct apm_control_link_obj link_obj[];
+} __packed;
+
+#define APM_MOD_CTRL_LINK_PSIZE(p, n) ALIGN(struct_size(p, link_obj, n), 8)
 
 /* Sub-Graph Properties */
 #define APM_PARAM_ID_SUB_GRAPH_CONFIG	0x08001001
@@ -1042,4 +1069,19 @@ int audioreach_setup_push_pull(struct q6apm_graph *graph, phys_addr_t bphys,
 int audioreach_map_memory_position_buffer(struct q6apm_graph *graph, unsigned int dir);
 
 int audioreach_shmem_register_event(struct q6apm_graph *graph, int bytes, int num_levels);
+
+/* Closed-loop speaker protection (audioreach-sp11.c) */
+#define EVENT_ID_SP_DIAGNOSTICS		0x0800138c
+#define PARAM_ID_SP_TH_VI_R0T0_CFG	0x080011f5
+
+int audioreach_sp11_load(struct device *dev, const char *driver_name, const char *card_name);
+unsigned int audioreach_sp11_count_links(const struct audioreach_graph_info *info);
+unsigned int audioreach_sp11_fill_links(const struct audioreach_graph_info *info,
+					struct apm_control_link_obj *obj);
+int audioreach_sp11_graph_params(struct q6apm_graph *graph,
+				 const struct audioreach_module *module);
+int audioreach_sp11_register_events(struct q6apm_graph *graph,
+				    const struct audioreach_module *module);
+void audioreach_sp11_event(struct device *dev, u32 event_id, const void *payload, u32 size);
+void audioreach_sp11_graph_state(struct q6apm_graph *graph, bool started);
 #endif /* __AUDIOREACH_H__ */

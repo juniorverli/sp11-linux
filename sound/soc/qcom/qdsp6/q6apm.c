@@ -576,6 +576,10 @@ static int graph_callback(const struct gpr_resp_pkt *data, void *priv, int op)
 			client_event = APM_CLIENT_EVENT_WATERMARK_EVENT;
 			graph->cb(client_event, hdr->token, data->payload, graph->priv);
 			break;
+		case EVENT_ID_SP_DIAGNOSTICS:
+			audioreach_sp11_event(dev, event->event_id, event + 1,
+					      event->event_payload_size);
+			break;
 		}
 
 		break;
@@ -808,6 +812,9 @@ int q6apm_graph_start(struct q6apm_graph *graph)
 		ret = audioreach_graph_mgmt_cmd(ar_graph, APM_CMD_GRAPH_START);
 		if (ret)
 			return ret;
+
+		/* Once per run, like the stop below: the guard counts streams */
+		audioreach_sp11_graph_state(graph, true);
 	}
 
 	ar_graph->start_count++;
@@ -825,6 +832,8 @@ int q6apm_graph_stop(struct q6apm_graph *graph)
 
 	if (--ar_graph->start_count > 0)
 		return 0;
+
+	audioreach_sp11_graph_state(graph, false);
 
 	return audioreach_graph_mgmt_cmd(ar_graph, APM_CMD_GRAPH_STOP);
 }

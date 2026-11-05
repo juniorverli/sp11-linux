@@ -1436,7 +1436,11 @@ int audioreach_tplg_init(struct snd_soc_component *component)
 	if (ret < 0) {
 		if (ret != -EPROBE_DEFER)
 			dev_err(dev, "tplg component load failed: %d\n", ret);
+		return ret;
 	}
+
+	/* Optional closed-loop speaker protection data (Surface Pro 11) */
+	ret = audioreach_sp11_load(dev, card->driver_name, card->name);
 
 	return ret;
 }
