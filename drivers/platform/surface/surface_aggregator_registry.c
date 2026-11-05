@@ -411,6 +411,7 @@ static const struct software_node *ssam_node_group_sp11[] = {
 	&ssam_node_bat_ac,
 	&ssam_node_bat_main,
 	&ssam_node_tmp_sensors,
+	&ssam_node_fan_speed,
 	&ssam_node_hid_kip_keyboard,
 	&ssam_node_hid_kip_touchpad,
 	&ssam_node_hid_kip_fwupd,
