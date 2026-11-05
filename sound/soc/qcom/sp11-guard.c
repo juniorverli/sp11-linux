@@ -293,11 +293,33 @@ EXPORT_SYMBOL_GPL(sp11_guard_stream);
  */
 void sp11_guard_vi_calibration(const void *graph, unsigned int ch_mask, bool valid)
 {
+	const void *target = graph;
+	unsigned long flags;
+	bool ambiguous;
 	u64 generation;
 
 	if (!valid || !graph || !(ch_mask & SP11_CAL_ALL_MASK))
 		return;
-	generation = sp11_guard_calibration_begin(graph);
+	/*
+	 * The DSP delivers a module event with the graph that owns the receiving
+	 * module. These events are registered on the speaker protection module of
+	 * the playback graph while the calibration belongs to the V/I capture
+	 * graph, so taking the event's graph would always fail the identity check
+	 * and would drop a valid measurement. Bind it to the running V/I graph
+	 * when exactly one is running; zero or several stay refused and fail
+	 * closed, as before.
+	 */
+	spin_lock_irqsave(&guard.lock, flags);
+	ambiguous = guard.vi_ambiguous || !guard.vi_graph ||
+		    !guard.streams[SP11_STREAM_VI];
+	if (!ambiguous)
+		target = guard.vi_graph;
+	spin_unlock_irqrestore(&guard.lock, flags);
+	if (ambiguous) {
+		pr_warn("sp11-guard: measured VI calibration ignored, no unique running V/I graph\n");
+		return;
+	}
+	generation = sp11_guard_calibration_begin(target);
 	if (!generation || !sp11_guard_calibrated(generation, ch_mask & SP11_CAL_ALL_MASK, false)) {
 		pr_warn("sp11-guard: measured VI calibration rejected (graph or generation)\n");
 		return;
