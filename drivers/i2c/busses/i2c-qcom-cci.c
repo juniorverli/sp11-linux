@@ -514,6 +514,9 @@ static int cci_probe(struct platform_device *pdev)
 	if (!cci)
 		return -ENOMEM;
 
+	for (i = 0; i < NUM_MASTERS; i++)
+		init_completion(&cci->master[i].irq_complete);
+
 	cci->dev = dev;
 	platform_set_drvdata(pdev, cci);
 	cci->data = device_get_match_data(dev);
@@ -558,8 +561,6 @@ static int cci_probe(struct platform_device *pdev)
 			else if (val == I2C_MAX_FAST_MODE_PLUS_FREQ)
 				master->mode = I2C_MODE_FAST_PLUS;
 		}
-
-		init_completion(&master->irq_complete);
 	}
 
 	/* Memory */
