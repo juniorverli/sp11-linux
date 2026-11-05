@@ -11,8 +11,10 @@
 #include <linux/export.h>
 #include <linux/ioctl.h>
 #include <linux/leds.h>
+#include <linux/list.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -20,11 +22,276 @@
 #include <linux/version.h>
 #include <linux/videodev2.h>
 
+#if IS_ENABLED(CONFIG_VIDEO_V4L2_SUBDEV_PRIVACY_LED_KUNIT_TEST)
+#include <kunit/test.h>
+#endif
+
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-fh.h>
 #include <media/v4l2-ioctl.h>
+
+enum v4l2_privacy_led_transition {
+	V4L2_PRIVACY_LED_NO_CHANGE,
+	V4L2_PRIVACY_LED_TURN_ON,
+	V4L2_PRIVACY_LED_TURN_OFF,
+};
+
+static enum v4l2_privacy_led_transition
+v4l2_privacy_led_update(unsigned int *streaming_users, bool *streaming,
+			bool enable)
+{
+	if (*streaming == enable)
+		return V4L2_PRIVACY_LED_NO_CHANGE;
+
+	*streaming = enable;
+	if (enable)
+		return ++*streaming_users == 1 ? V4L2_PRIVACY_LED_TURN_ON :
+			V4L2_PRIVACY_LED_NO_CHANGE;
+
+	if (WARN_ON_ONCE(!*streaming_users))
+		return V4L2_PRIVACY_LED_NO_CHANGE;
+
+	return --*streaming_users == 0 ? V4L2_PRIVACY_LED_TURN_OFF :
+		V4L2_PRIVACY_LED_NO_CHANGE;
+}
+
+#if IS_ENABLED(CONFIG_VIDEO_V4L2_SUBDEV_PRIVACY_LED_KUNIT_TEST)
+#define EXPECT_PRIVACY_TRANSITION(_consumer, _enable, _expected) \
+	KUNIT_EXPECT_EQ(test, \
+		v4l2_privacy_led_update(&streaming_users, &(_consumer), (_enable)), \
+		(_expected))
+
+static void v4l2_privacy_led_two_consumers_test(struct kunit *test)
+{
+	unsigned int streaming_users = 0;
+	bool front_streaming = false;
+	bool ir_streaming = false;
+
+	EXPECT_PRIVACY_TRANSITION(front_streaming, true, V4L2_PRIVACY_LED_TURN_ON);
+	KUNIT_EXPECT_EQ(test, streaming_users, 1U);
+	EXPECT_PRIVACY_TRANSITION(ir_streaming, true, V4L2_PRIVACY_LED_NO_CHANGE);
+	KUNIT_EXPECT_EQ(test, streaming_users, 2U);
+	EXPECT_PRIVACY_TRANSITION(front_streaming, false, V4L2_PRIVACY_LED_NO_CHANGE);
+	KUNIT_EXPECT_EQ(test, streaming_users, 1U);
+	EXPECT_PRIVACY_TRANSITION(ir_streaming, false, V4L2_PRIVACY_LED_TURN_OFF);
+	KUNIT_EXPECT_EQ(test, streaming_users, 0U);
+}
+
+static void v4l2_privacy_led_idempotent_consumer_test(struct kunit *test)
+{
+	unsigned int streaming_users = 0;
+	bool streaming = false;
+
+	EXPECT_PRIVACY_TRANSITION(streaming, true, V4L2_PRIVACY_LED_TURN_ON);
+	EXPECT_PRIVACY_TRANSITION(streaming, true, V4L2_PRIVACY_LED_NO_CHANGE);
+	KUNIT_EXPECT_EQ(test, streaming_users, 1U);
+	EXPECT_PRIVACY_TRANSITION(streaming, false, V4L2_PRIVACY_LED_TURN_OFF);
+	EXPECT_PRIVACY_TRANSITION(streaming, false, V4L2_PRIVACY_LED_NO_CHANGE);
+	KUNIT_EXPECT_EQ(test, streaming_users, 0U);
+}
+
+static void v4l2_privacy_led_registry_lifecycle_test(struct kunit *test);
+
+static struct kunit_case v4l2_privacy_led_test_cases[] = {
+	KUNIT_CASE(v4l2_privacy_led_two_consumers_test),
+	KUNIT_CASE(v4l2_privacy_led_idempotent_consumer_test),
+	KUNIT_CASE(v4l2_privacy_led_registry_lifecycle_test),
+	{}
+};
+
+static struct kunit_suite v4l2_privacy_led_test_suite = {
+	.name = "v4l2-subdev-privacy-led",
+	.test_cases = v4l2_privacy_led_test_cases,
+};
+
+kunit_test_suite(v4l2_privacy_led_test_suite);
+#undef EXPECT_PRIVACY_TRANSITION
+#endif
+
+#if IS_REACHABLE(CONFIG_LEDS_CLASS)
+struct v4l2_privacy_led_ref {
+	struct list_head list;
+	struct led_classdev *led;
+	unsigned int users;
+	unsigned int streaming_users;
+};
+
+static LIST_HEAD(v4l2_privacy_led_refs);
+static DEFINE_MUTEX(v4l2_privacy_led_refs_lock);
+
+static struct v4l2_privacy_led_ref *
+v4l2_privacy_led_ref_find(struct led_classdev *led)
+{
+	struct v4l2_privacy_led_ref *ref;
+
+	list_for_each_entry(ref, &v4l2_privacy_led_refs, list) {
+		if (ref->led == led)
+			return ref;
+	}
+
+	return NULL;
+}
+
+/* The caller must hold v4l2_privacy_led_refs_lock. */
+static struct v4l2_privacy_led_ref *
+v4l2_privacy_led_ref_get_locked(struct led_classdev *led)
+{
+	struct v4l2_privacy_led_ref *ref;
+
+	ref = v4l2_privacy_led_ref_find(led);
+	if (!ref) {
+		ref = kzalloc_obj(*ref);
+		if (!ref)
+			return NULL;
+
+		ref->led = led;
+		list_add(&ref->list, &v4l2_privacy_led_refs);
+	}
+
+	ref->users++;
+	return ref;
+}
+
+/* The caller must hold v4l2_privacy_led_refs_lock. */
+static bool
+v4l2_privacy_led_ref_put_locked(struct v4l2_privacy_led_ref *ref)
+{
+	if (WARN_ON_ONCE(!ref->users))
+		return false;
+
+	if (--ref->users)
+		return false;
+
+	list_del(&ref->list);
+	kfree(ref);
+	return true;
+}
+
+/* The caller must hold v4l2_privacy_led_refs_lock. */
+static int v4l2_privacy_led_get_locked(struct v4l2_subdev *sd,
+				       struct led_classdev *led,
+				       bool *takeover)
+{
+	struct v4l2_privacy_led_ref *ref;
+
+	*takeover = false;
+	if (sd->privacy_led)
+		return -EBUSY;
+
+	ref = v4l2_privacy_led_ref_find(led);
+	if (!ref) {
+		ref = v4l2_privacy_led_ref_get_locked(led);
+		if (!ref)
+			return -ENOMEM;
+
+		*takeover = true;
+	} else {
+		ref->users++;
+	}
+
+	sd->privacy_led = led;
+	sd->privacy_led_streaming = false;
+	return 0;
+}
+
+/* The caller must hold v4l2_privacy_led_refs_lock. */
+static struct led_classdev *
+v4l2_privacy_led_put_locked(struct v4l2_subdev *sd, bool *restore,
+			    enum v4l2_privacy_led_transition *transition)
+{
+	struct v4l2_privacy_led_ref *ref;
+	struct led_classdev *led = sd->privacy_led;
+
+	*restore = false;
+	*transition = V4L2_PRIVACY_LED_NO_CHANGE;
+	if (IS_ERR_OR_NULL(led))
+		goto clear;
+
+	ref = v4l2_privacy_led_ref_find(led);
+	if (WARN_ON_ONCE(!ref || !ref->users))
+		goto clear;
+
+	*transition = v4l2_privacy_led_update(&ref->streaming_users,
+					      &sd->privacy_led_streaming,
+					      false);
+	*restore = ref->users == 1;
+	v4l2_privacy_led_ref_put_locked(ref);
+clear:
+	sd->privacy_led = NULL;
+	sd->privacy_led_streaming = false;
+	return led;
+}
+
+#if IS_ENABLED(CONFIG_VIDEO_V4L2_SUBDEV_PRIVACY_LED_KUNIT_TEST)
+static void v4l2_privacy_led_registry_lifecycle_test(struct kunit *test)
+{
+	struct led_classdev *led = (struct led_classdev *)test;
+	struct led_classdev *put_led;
+	struct v4l2_subdev front = {}, ir = {}, reprobed = {};
+	struct v4l2_privacy_led_ref *ref;
+	enum v4l2_privacy_led_transition transition;
+	bool takeover = false, restore;
+	int ret;
+
+	mutex_lock(&v4l2_privacy_led_refs_lock);
+	ret = v4l2_privacy_led_get_locked(&front, led, &takeover);
+	if (ret) {
+		KUNIT_FAIL(test, "could not acquire first privacy LED user");
+		goto out_unlock;
+	}
+	KUNIT_EXPECT_TRUE(test, takeover);
+	takeover = false;
+	ret = v4l2_privacy_led_get_locked(&ir, led, &takeover);
+	if (ret) {
+		KUNIT_FAIL(test, "could not acquire shared privacy LED user");
+		v4l2_privacy_led_put_locked(&front, &restore, &transition);
+		goto out_unlock;
+	}
+	KUNIT_EXPECT_FALSE(test, takeover);
+	ret = v4l2_privacy_led_get_locked(&front, led, &takeover);
+	KUNIT_EXPECT_EQ(test, ret, -EBUSY);
+	ref = v4l2_privacy_led_ref_find(led);
+	if (!ref) {
+		KUNIT_FAIL(test, "shared LED registry entry disappeared early");
+		v4l2_privacy_led_put_locked(&front, &restore, &transition);
+		v4l2_privacy_led_put_locked(&ir, &restore, &transition);
+		goto out_unlock;
+	}
+	KUNIT_EXPECT_EQ(test, ref->users, 2U);
+	transition = v4l2_privacy_led_update(&ref->streaming_users,
+					     &front.privacy_led_streaming, true);
+	KUNIT_EXPECT_EQ(test, transition, V4L2_PRIVACY_LED_TURN_ON);
+	transition = v4l2_privacy_led_update(&ref->streaming_users,
+					     &ir.privacy_led_streaming, true);
+	KUNIT_EXPECT_EQ(test, transition, V4L2_PRIVACY_LED_NO_CHANGE);
+	v4l2_privacy_led_put_locked(&front, &restore, &transition);
+	KUNIT_EXPECT_FALSE(test, restore);
+	KUNIT_EXPECT_EQ(test, transition, V4L2_PRIVACY_LED_NO_CHANGE);
+	KUNIT_EXPECT_EQ(test, v4l2_privacy_led_ref_find(led)->users, 1U);
+	v4l2_privacy_led_put_locked(&ir, &restore, &transition);
+	KUNIT_EXPECT_TRUE(test, restore);
+	KUNIT_EXPECT_EQ(test, transition, V4L2_PRIVACY_LED_TURN_OFF);
+	KUNIT_EXPECT_PTR_EQ(test, v4l2_privacy_led_ref_find(led), NULL);
+	put_led = v4l2_privacy_led_put_locked(&ir, &restore, &transition);
+	KUNIT_EXPECT_PTR_EQ(test, put_led, NULL);
+
+	/* Reprobe takes over after the final put removed the old entry. */
+	takeover = false;
+	ret = v4l2_privacy_led_get_locked(&reprobed, led, &takeover);
+	if (ret) {
+		KUNIT_FAIL(test, "could not acquire reprobed privacy LED");
+		goto out_unlock;
+	}
+	KUNIT_EXPECT_TRUE(test, takeover);
+	v4l2_privacy_led_put_locked(&reprobed, &restore, &transition);
+	KUNIT_EXPECT_TRUE(test, restore);
+out_unlock:
+	mutex_unlock(&v4l2_privacy_led_refs_lock);
+}
+#endif
+#endif
 
 /**
  * struct v4l2_subdev_stream_config - Used for storing stream configuration.
@@ -173,17 +440,48 @@ static int subdev_close(struct file *file)
 static void v4l2_subdev_enable_privacy_led(struct v4l2_subdev *sd)
 {
 #if IS_REACHABLE(CONFIG_LEDS_CLASS)
-	if (!IS_ERR_OR_NULL(sd->privacy_led))
-		led_set_brightness(sd->privacy_led,
-				   sd->privacy_led->max_brightness);
+	struct v4l2_privacy_led_ref *ref;
+	struct led_classdev *led;
+	enum v4l2_privacy_led_transition transition;
+
+	mutex_lock(&v4l2_privacy_led_refs_lock);
+	led = sd->privacy_led;
+	if (IS_ERR_OR_NULL(led))
+		goto out;
+	ref = v4l2_privacy_led_ref_find(led);
+	if (WARN_ON_ONCE(!ref))
+		goto out;
+
+	transition = v4l2_privacy_led_update(&ref->streaming_users,
+					     &sd->privacy_led_streaming, true);
+	if (transition == V4L2_PRIVACY_LED_TURN_ON)
+		led_set_brightness(ref->led, ref->led->max_brightness);
+out:
+	mutex_unlock(&v4l2_privacy_led_refs_lock);
 #endif
 }
 
 static void v4l2_subdev_disable_privacy_led(struct v4l2_subdev *sd)
 {
 #if IS_REACHABLE(CONFIG_LEDS_CLASS)
-	if (!IS_ERR_OR_NULL(sd->privacy_led))
-		led_set_brightness(sd->privacy_led, 0);
+	struct v4l2_privacy_led_ref *ref;
+	struct led_classdev *led;
+	enum v4l2_privacy_led_transition transition;
+
+	mutex_lock(&v4l2_privacy_led_refs_lock);
+	led = sd->privacy_led;
+	if (IS_ERR_OR_NULL(led))
+		goto out;
+	ref = v4l2_privacy_led_ref_find(led);
+	if (WARN_ON_ONCE(!ref))
+		goto out;
+
+	transition = v4l2_privacy_led_update(&ref->streaming_users,
+					     &sd->privacy_led_streaming, false);
+	if (transition == V4L2_PRIVACY_LED_TURN_OFF)
+		led_set_brightness(ref->led, 0);
+out:
+	mutex_unlock(&v4l2_privacy_led_refs_lock);
 #endif
 }
 
@@ -2687,6 +2985,7 @@ void v4l2_subdev_init(struct v4l2_subdev *sd, const struct v4l2_subdev_ops *ops)
 	sd->dev_priv = NULL;
 	sd->host_priv = NULL;
 	sd->privacy_led = NULL;
+	sd->privacy_led_streaming = false;
 	INIT_LIST_HEAD(&sd->async_subdev_endpoint_list);
 #if defined(CONFIG_MEDIA_CONTROLLER)
 	sd->entity.name = sd->name;
@@ -2732,17 +3031,36 @@ EXPORT_SYMBOL_GPL(v4l2_subdev_is_streaming);
 int v4l2_subdev_get_privacy_led(struct v4l2_subdev *sd)
 {
 #if IS_REACHABLE(CONFIG_LEDS_CLASS)
-	sd->privacy_led = led_get(sd->dev, "privacy");
-	if (IS_ERR(sd->privacy_led) && PTR_ERR(sd->privacy_led) != -ENOENT)
-		return dev_err_probe(sd->dev, PTR_ERR(sd->privacy_led),
-				     "getting privacy LED\n");
+	struct led_classdev *led;
+	bool takeover = false;
+	int ret = 0;
 
-	if (!IS_ERR_OR_NULL(sd->privacy_led)) {
-		mutex_lock(&sd->privacy_led->led_access);
-		led_sysfs_disable(sd->privacy_led);
-		led_trigger_remove(sd->privacy_led);
-		led_set_brightness(sd->privacy_led, 0);
-		mutex_unlock(&sd->privacy_led->led_access);
+	led = led_get(sd->dev, "privacy");
+	if (IS_ERR(led)) {
+		if (PTR_ERR(led) == -ENOENT)
+			return 0;
+
+		return dev_err_probe(sd->dev, PTR_ERR(led),
+				     "getting privacy LED\n");
+	}
+
+	mutex_lock(&v4l2_privacy_led_refs_lock);
+	ret = v4l2_privacy_led_get_locked(sd, led, &takeover);
+	if (ret)
+		goto out_unlock;
+	if (takeover) {
+		/* The first consumer takes exclusive control of the LED. */
+		mutex_lock(&led->led_access);
+		led_sysfs_disable(led);
+		led_trigger_remove(led);
+		led_set_brightness(led, 0);
+		mutex_unlock(&led->led_access);
+	}
+out_unlock:
+	mutex_unlock(&v4l2_privacy_led_refs_lock);
+	if (ret) {
+		led_put(led);
+		return dev_err_probe(sd->dev, ret, "registering privacy LED\n");
 	}
 #endif
 	return 0;
@@ -2752,12 +3070,27 @@ EXPORT_SYMBOL_GPL(v4l2_subdev_get_privacy_led);
 void v4l2_subdev_put_privacy_led(struct v4l2_subdev *sd)
 {
 #if IS_REACHABLE(CONFIG_LEDS_CLASS)
-	if (!IS_ERR_OR_NULL(sd->privacy_led)) {
-		mutex_lock(&sd->privacy_led->led_access);
-		led_sysfs_enable(sd->privacy_led);
-		mutex_unlock(&sd->privacy_led->led_access);
-		led_put(sd->privacy_led);
+	enum v4l2_privacy_led_transition transition;
+	bool restore;
+	struct led_classdev *led;
+
+	mutex_lock(&v4l2_privacy_led_refs_lock);
+	led = v4l2_privacy_led_put_locked(sd, &restore, &transition);
+	if (IS_ERR_OR_NULL(led)) {
+		mutex_unlock(&v4l2_privacy_led_refs_lock);
+		return;
 	}
+	if (transition == V4L2_PRIVACY_LED_TURN_OFF)
+		led_set_brightness(led, 0);
+	if (restore) {
+		WARN_ON_ONCE(transition != V4L2_PRIVACY_LED_NO_CHANGE &&
+			     transition != V4L2_PRIVACY_LED_TURN_OFF);
+		mutex_lock(&led->led_access);
+		led_sysfs_enable(led);
+		mutex_unlock(&led->led_access);
+	}
+	mutex_unlock(&v4l2_privacy_led_refs_lock);
+	led_put(led);
 #endif
 }
 EXPORT_SYMBOL_GPL(v4l2_subdev_put_privacy_led);

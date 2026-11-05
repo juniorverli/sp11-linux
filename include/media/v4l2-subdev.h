@@ -1032,6 +1032,7 @@ struct v4l2_subdev_platform_data {
  *		driver. This is	optional. If NULL, each state instance will get
  *		a lock of its own.
  * @privacy_led: Optional pointer to a LED classdev for the privacy LED for sensors.
+ * @privacy_led_streaming: Whether this sub-device owns a stream reference to its privacy LED.
  * @active_state: Active state for the subdev (NULL for subdevs tracking the
  *		  state internally). Initialized by calling
  *		  v4l2_subdev_init_finalize().
@@ -1079,6 +1080,7 @@ struct v4l2_subdev {
 	 */
 
 	struct led_classdev *privacy_led;
+	bool privacy_led_streaming;
 
 	/*
 	 * TODO: active_state should most likely be changed from a pointer to an

@@ -17,6 +17,17 @@ config VIDEO_V4L2_SUBDEV_API
 
 	  This API is mostly used by camera interfaces in embedded platforms.
 
+config VIDEO_V4L2_SUBDEV_PRIVACY_LED_KUNIT_TEST
+	tristate "KUnit tests for shared V4L2 privacy LEDs" if !KUNIT_ALL_TESTS
+	depends on KUNIT && VIDEO_DEV && LEDS_CLASS=y
+	default KUNIT_ALL_TESTS
+	help
+	  Run unit tests for V4L2 privacy LED arbitration. The tests cover two
+	  sensor sub-devices that share one privacy LED, including start and stop
+	  ordering, and verify that the LED remains on until the last stream stops.
+	  They also verify that duplicate transitions from one sub-device do not
+	  change the shared stream count.
+
 config VIDEO_ADV_DEBUG
 	bool "Enable advanced debug functionality on V4L2 drivers"
 	help
