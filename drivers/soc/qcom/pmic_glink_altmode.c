@@ -171,6 +171,8 @@ static int pmic_glink_altmode_request(struct pmic_glink_altmode *altmode, u32 cm
 		return -ETIMEDOUT;
 	}
 
+	dev_dbg(altmode->dev, "request: cmd=%#x arg=%u acknowledged\n", cmd, arg);
+
 	return 0;
 }
 
@@ -351,8 +353,13 @@ static void pmic_glink_altmode_worker(struct work_struct *work)
 	struct pmic_glink_altmode_port *alt_port = work_to_altmode_port(work);
 	struct pmic_glink_altmode *altmode = alt_port->altmode;
 	enum drm_connector_status conn_status;
+	int ret;
 
-	typec_switch_set(alt_port->typec_switch, alt_port->orientation);
+	ret = typec_switch_set(alt_port->typec_switch, alt_port->orientation);
+	dev_dbg(altmode->dev,
+		"apply: port=%u orientation=%u mux=%u svid=%04x switch_ret=%d\n",
+		alt_port->index, alt_port->orientation, alt_port->mux_ctrl,
+		alt_port->svid, ret);
 
 	/*
 	 * MUX_CTRL_STATE_DP4LN/USB3_DP may only be set if SVID=DP, but we need
@@ -488,6 +495,9 @@ static void pmic_glink_altmode_sc8280xp_notify(struct pmic_glink_altmode *altmod
 	alt_port->orientation = pmic_glink_altmode_orientation(orientation);
 	alt_port->svid = svid;
 	alt_port->mux_ctrl = notify->mux_ctrl;
+
+	dev_dbg(altmode->dev, "notify: port=%u orientation=%u mux=%u svid=%04x\n",
+		port, orientation, notify->mux_ctrl, svid);
 
 	if (svid == USB_TYPEC_DP_SID) {
 		dp = &notify->extended_data.dp;

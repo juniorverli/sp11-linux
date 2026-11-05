@@ -138,6 +138,7 @@ static void ps883x_reset(struct ps883x_retimer *retimer)
 	if (retimer->in_reset)
 		return;
 
+	dev_dbg(&retimer->client->dev, "assert reset and disable supplies\n");
 	gpiod_set_value(retimer->reset_gpio, 1);
 	ps883x_disable_vregs(retimer);
 	retimer->in_reset = true;
@@ -148,6 +149,9 @@ static int ps883x_configure(struct ps883x_retimer *retimer, int cfg0,
 {
 	struct device *dev = &retimer->client->dev;
 	int ret;
+
+	dev_dbg(dev, "configure: conn_status=%02x/%02x/%02x reset=%u in_reset=%u\n",
+		cfg0, cfg1, cfg2, reset, retimer->in_reset);
 
 	if (reset) {
 		ps883x_reset(retimer);
@@ -278,6 +282,9 @@ static int ps883x_sw_set(struct typec_switch_dev *sw,
 
 	guard(mutex)(&retimer->lock);
 
+	dev_dbg(&retimer->client->dev, "orientation: %u -> %u in_reset=%u\n",
+		retimer->orientation, orientation, retimer->in_reset);
+
 	if (retimer->orientation != orientation) {
 		retimer->orientation = orientation;
 
@@ -308,6 +315,10 @@ static int ps883x_retimer_set(struct typec_retimer *rtmr,
 
 	mutex_lock(&retimer->lock);
 	ret = ps883x_set(retimer, state);
+	dev_dbg(&retimer->client->dev,
+		"set: mode=%lu svid=%04x orientation=%u in_reset=%u ret=%d\n",
+		state->mode, state->alt ? state->alt->svid : 0,
+		retimer->orientation, retimer->in_reset, ret);
 	mutex_unlock(&retimer->lock);
 
 	if (ret)
