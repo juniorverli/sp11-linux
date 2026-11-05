@@ -3,9 +3,13 @@
 
 #include <linux/acpi.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
+#include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-event.h>
@@ -1028,7 +1032,16 @@ static const struct ov13858_mode supported_modes[] = {
 	}
 };
 
+/* Enable supplies in order; regulator_bulk_enable() may run in parallel. */
+static const char * const ov13858_supply_names[] = {
+	"dovdd",
+	"dvdd",
+	"avdd",
+};
+
 struct ov13858 {
+	struct regulator_bulk_data supplies[ARRAY_SIZE(ov13858_supply_names)];
+	struct gpio_desc *reset_gpio;
 	struct device *dev;
 	struct clk *clk;
 
@@ -1655,6 +1668,122 @@ static void ov13858_free_controls(struct ov13858 *ov13858)
 	mutex_destroy(&ov13858->mutex);
 }
 
+static int ov13858_power_off(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ov13858 *ov13858 = to_ov13858(sd);
+	unsigned int i;
+
+	if (!dev_of_node(dev))
+		return 0;
+
+	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
+	usleep_range(1000, 2000);
+	clk_disable_unprepare(ov13858->clk);
+	for (i = ARRAY_SIZE(ov13858_supply_names); i > 0; i--)
+		regulator_disable(ov13858->supplies[i - 1].consumer);
+
+	return 0;
+}
+
+static int ov13858_power_on(struct device *dev)
+{
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+	struct ov13858 *ov13858 = to_ov13858(sd);
+	unsigned int i;
+	int ret;
+
+	if (!dev_of_node(dev))
+		return 0;
+
+	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
+	for (i = 0; i < ARRAY_SIZE(ov13858_supply_names); i++) {
+		ret = regulator_enable(ov13858->supplies[i].consumer);
+		if (ret)
+			goto disable_supplies;
+	}
+
+	usleep_range(1000, 2000);
+	ret = clk_prepare_enable(ov13858->clk);
+	if (ret)
+		goto disable_supplies;
+
+	gpiod_set_value_cansleep(ov13858->reset_gpio, 0);
+	usleep_range(10000, 11000);
+
+	return 0;
+
+disable_supplies:
+	while (i > 0)
+		regulator_disable(ov13858->supplies[--i].consumer);
+
+	return ret;
+}
+
+static int ov13858_get_of_resources(struct ov13858 *ov13858)
+{
+	struct device *dev = ov13858->dev;
+	struct v4l2_fwnode_endpoint ep = {
+		.bus_type = V4L2_MBUS_CSI2_DPHY,
+	};
+	struct fwnode_handle *fwnode;
+	unsigned int i, j;
+	int ret;
+
+	if (!dev_of_node(dev))
+		return 0;
+
+	fwnode = fwnode_graph_get_next_endpoint(dev_fwnode(dev), NULL);
+	if (!fwnode)
+		return dev_err_probe(dev, -EINVAL, "missing endpoint\n");
+
+	ret = v4l2_fwnode_endpoint_alloc_parse(fwnode, &ep);
+	fwnode_handle_put(fwnode);
+	if (ret)
+		return ret;
+
+	if (ep.bus.mipi_csi2.num_data_lanes != 4) {
+		ret = -EINVAL;
+		goto free_endpoint;
+	}
+
+	/* All existing modes remain advertised, so require both PLL rates. */
+	for (i = 0; i < ARRAY_SIZE(link_freq_menu_items); i++) {
+		for (j = 0; j < ep.nr_of_link_frequencies; j++)
+			if (link_freq_menu_items[i] == ep.link_frequencies[j])
+				break;
+		if (j == ep.nr_of_link_frequencies) {
+			ret = -EINVAL;
+			goto free_endpoint;
+		}
+	}
+
+free_endpoint:
+	v4l2_fwnode_endpoint_free(&ep);
+	if (ret)
+		return dev_err_probe(dev, ret, "unsupported endpoint\n");
+
+	for (i = 0; i < ARRAY_SIZE(ov13858_supply_names); i++)
+		ov13858->supplies[i].supply = ov13858_supply_names[i];
+
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(ov13858_supply_names),
+				      ov13858->supplies);
+	if (ret)
+		return dev_err_probe(dev, ret, "failed to get supplies\n");
+
+	ov13858->reset_gpio = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	if (IS_ERR(ov13858->reset_gpio))
+		return dev_err_probe(dev, PTR_ERR(ov13858->reset_gpio),
+				     "failed to get reset GPIO\n");
+
+	return 0;
+}
+
+static const struct dev_pm_ops ov13858_pm_ops = {
+	SET_RUNTIME_PM_OPS(ov13858_power_off, ov13858_power_on, NULL)
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+};
+
 static int ov13858_probe(struct i2c_client *client)
 {
 	struct ov13858 *ov13858;
@@ -1681,11 +1810,19 @@ static int ov13858_probe(struct i2c_client *client)
 	/* Initialize subdev */
 	v4l2_i2c_subdev_init(&ov13858->sd, client, &ov13858_subdev_ops);
 
+	ret = ov13858_get_of_resources(ov13858);
+	if (ret)
+		return ret;
+
+	ret = ov13858_power_on(ov13858->dev);
+	if (ret)
+		return ret;
+
 	/* Check module identity */
 	ret = ov13858_identify_module(ov13858);
 	if (ret) {
 		dev_err(ov13858->dev, "failed to find sensor: %d\n", ret);
-		return ret;
+		goto error_power_off;
 	}
 
 	/* Set default mode to max resolution */
@@ -1693,7 +1830,7 @@ static int ov13858_probe(struct i2c_client *client)
 
 	ret = ov13858_init_controls(ov13858);
 	if (ret)
-		return ret;
+		goto error_power_off;
 
 	/* Initialize subdev */
 	ov13858->sd.internal_ops = &ov13858_internal_ops;
@@ -1715,7 +1852,7 @@ static int ov13858_probe(struct i2c_client *client)
 		goto error_media_entity;
 
 	/*
-	 * Device is already turned on by i2c-core with ACPI domain PM.
+	 * The OF path powered the sensor above; ACPI uses domain PM.
 	 * Enable runtime PM and turn off the device.
 	 */
 	pm_runtime_set_active(ov13858->dev);
@@ -1731,6 +1868,8 @@ error_handler_free:
 	ov13858_free_controls(ov13858);
 	dev_err(ov13858->dev, "%s failed:%d\n", __func__, ret);
 
+error_power_off:
+	ov13858_power_off(ov13858->dev);
 	return ret;
 }
 
@@ -1744,6 +1883,9 @@ static void ov13858_remove(struct i2c_client *client)
 	ov13858_free_controls(ov13858);
 
 	pm_runtime_disable(ov13858->dev);
+	if (!pm_runtime_status_suspended(ov13858->dev))
+		ov13858_power_off(ov13858->dev);
+	pm_runtime_set_suspended(ov13858->dev);
 }
 
 static const struct i2c_device_id ov13858_id_table[] = {
@@ -1762,10 +1904,18 @@ static const struct acpi_device_id ov13858_acpi_ids[] = {
 MODULE_DEVICE_TABLE(acpi, ov13858_acpi_ids);
 #endif
 
+static const struct of_device_id ov13858_of_match[] = {
+	{ .compatible = "ovti,ov13858" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, ov13858_of_match);
+
 static struct i2c_driver ov13858_i2c_driver = {
 	.driver = {
 		.name = "ov13858",
 		.acpi_match_table = ACPI_PTR(ov13858_acpi_ids),
+		.of_match_table = ov13858_of_match,
+		.pm = &ov13858_pm_ops,
 	},
 	.probe = ov13858_probe,
 	.remove = ov13858_remove,
