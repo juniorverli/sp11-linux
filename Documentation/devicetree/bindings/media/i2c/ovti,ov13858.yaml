@@ -41,6 +41,14 @@ properties:
     description: Active low sensor reset.
     maxItems: 1
 
+  firmware-name:
+    maxItems: 1
+    description:
+      Name of an optional register blob that adds sensor modes to the built-in
+      ones, loaded with request_firmware(). The blob format is documented in
+      drivers/media/i2c/sensor-regblob.h. The driver works with its built-in
+      modes when the property or the file is missing.
+
   port:
     $ref: /schemas/graph.yaml#/$defs/port-base
     unevaluatedProperties: false
@@ -55,8 +63,11 @@ properties:
             minItems: 4
             maxItems: 4
           link-frequencies:
+            description:
+              The 270 MHz and 540 MHz of the built-in modes, plus the link
+              frequency of the modes in the register blob, if any.
             minItems: 2
-            maxItems: 2
+            maxItems: 3
         required:
           - data-lanes
           - link-frequencies
