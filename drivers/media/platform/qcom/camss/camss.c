@@ -4782,17 +4782,28 @@ static const struct parent_dev_ops vfe_parent_dev_ops = {
 };
 
 /*
+ * camss_cphy_supported - Tell whether the CSIPHY of the SoC can receive C-PHY
+ * @camss: CAMSS device
+ */
+static bool camss_cphy_supported(struct camss *camss)
+{
+	/* Only the CSIPHY v2.1.2 C-PHY register sequence is implemented */
+	return camss->res->version == CAMSS_X1E80100;
+}
+
+/*
  * camss_parse_endpoint_node - Parse port endpoint node
- * @dev: CAMSS device
+ * @camss: CAMSS device
  * @ep: Device endpoint to be parsed
  * @csd: Parsed data from port endpoint node
  *
  * Return 0 on success or a negative error code on failure
  */
-static int camss_parse_endpoint_node(struct device *dev,
+static int camss_parse_endpoint_node(struct camss *camss,
 				     struct fwnode_handle *ep,
 				     struct camss_async_subdev *csd)
 {
+	struct device *dev = camss->dev;
 	struct csiphy_lanes_cfg *lncfg = &csd->interface.csi2.lane_cfg;
 	struct v4l2_mbus_config_mipi_csi2 *mipi_csi2;
 	struct v4l2_fwnode_endpoint vep = { { 0 } };
@@ -4804,10 +4815,22 @@ static int camss_parse_endpoint_node(struct device *dev,
 		return ret;
 
 	/*
-	 * Most SoCs support both D-PHY and C-PHY standards, but currently only
-	 * D-PHY is supported in the driver.
+	 * Most SoCs support both D-PHY and C-PHY standards, but C-PHY is only
+	 * implemented for the CSIPHY of the SoCs that camss_cphy_supported()
+	 * lists.
 	 */
-	if (vep.bus_type != V4L2_MBUS_CSI2_DPHY) {
+	switch (vep.bus_type) {
+	case V4L2_MBUS_CSI2_DPHY:
+		lncfg->cphy = false;
+		break;
+	case V4L2_MBUS_CSI2_CPHY:
+		if (!camss_cphy_supported(camss)) {
+			dev_err(dev, "C-PHY is not supported on this SoC\n");
+			return -EINVAL;
+		}
+		lncfg->cphy = true;
+		break;
+	default:
 		dev_err(dev, "Unsupported bus type %d\n", vep.bus_type);
 		return -EINVAL;
 	}
@@ -4815,8 +4838,46 @@ static int camss_parse_endpoint_node(struct device *dev,
 	csd->interface.csiphy_id = vep.base.port;
 
 	mipi_csi2 = &vep.bus.mipi_csi2;
-	lncfg->clk.pos = mipi_csi2->clock_lane;
-	lncfg->clk.pol = mipi_csi2->lane_polarities[0];
+
+	if (lncfg->cphy) {
+		/*
+		 * The data-lanes entries of a C-PHY endpoint are trios. A
+		 * CSIPHY has three of them, there is no clock lane, and the
+		 * polarity and the line order of a trio cannot be changed.
+		 */
+		if (mipi_csi2->num_data_lanes > 3) {
+			dev_err(dev, "C-PHY supports at most 3 trios, got %u\n",
+				mipi_csi2->num_data_lanes);
+			return -EINVAL;
+		}
+
+		for (i = 0; i < mipi_csi2->num_data_lanes; i++) {
+			if (mipi_csi2->data_lanes[i] > 2) {
+				dev_err(dev, "Invalid C-PHY trio %u\n",
+					mipi_csi2->data_lanes[i]);
+				return -EINVAL;
+			}
+
+			/* Entry 0 of lane-polarities belongs to the clock lane */
+			if (mipi_csi2->lane_polarities[i + 1]) {
+				dev_err(dev, "Inverted C-PHY trio polarity is not supported\n");
+				return -EINVAL;
+			}
+
+			if (mipi_csi2->line_orders[i] !=
+			    V4L2_MBUS_CSI2_CPHY_LINE_ORDER_ABC) {
+				dev_err(dev, "Only the ABC C-PHY line order is supported\n");
+				return -EINVAL;
+			}
+		}
+
+		lncfg->clk.pos = 0;
+		lncfg->clk.pol = 0;
+	} else {
+		lncfg->clk.pos = mipi_csi2->clock_lane;
+		lncfg->clk.pol = mipi_csi2->lane_polarities[0];
+	}
+
 	lncfg->num_data = mipi_csi2->num_data_lanes;
 
 	lncfg->data = devm_kcalloc(dev,
@@ -4855,7 +4916,7 @@ static int camss_parse_ports(struct camss *camss)
 			goto err_cleanup;
 		}
 
-		ret = camss_parse_endpoint_node(dev, ep, csd);
+		ret = camss_parse_endpoint_node(camss, ep, csd);
 		if (ret < 0)
 			goto err_cleanup;
 	}
