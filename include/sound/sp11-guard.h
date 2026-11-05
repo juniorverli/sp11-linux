@@ -43,6 +43,8 @@ void sp11_guard_loaded(bool loaded);
 void sp11_guard_graph(bool up, bool cps_required);
 void sp11_guard_stream(enum sp11_guard_stream stream, bool start);
 void sp11_guard_calibrated(unsigned int ch_mask, bool nominal);
+void sp11_guard_sp_enabled(bool enabled);
+void sp11_guard_diagnostics_degraded(bool degraded);
 void sp11_guard_fault(const char *src, u32 code);
 void sp11_guard_set_mute(void (*mute)(void *data), void *data);
 void sp11_guard_clear_mute(void *data);
@@ -57,6 +59,8 @@ static inline void sp11_guard_loaded(bool loaded) { }
 static inline void sp11_guard_graph(bool up, bool cps_required) { }
 static inline void sp11_guard_stream(enum sp11_guard_stream stream, bool start) { }
 static inline void sp11_guard_calibrated(unsigned int ch_mask, bool nominal) { }
+static inline void sp11_guard_sp_enabled(bool enabled) { }
+static inline void sp11_guard_diagnostics_degraded(bool degraded) { }
 static inline void sp11_guard_fault(const char *src, u32 code) { }
 static inline void sp11_guard_set_mute(void (*mute)(void *data), void *data) { }
 static inline void sp11_guard_clear_mute(void *data) { }

@@ -494,6 +494,10 @@ void audioreach_sp11_graph_state(struct q6apm_graph *graph, bool started)
 
 	if (q6apm_find_module_by_mid(graph, MODULE_ID_SPEAKER_PROTECTION))
 		sp11_guard_graph(started, cps);
+	if (!started && q6apm_find_module_by_mid(graph, MODULE_ID_SPEAKER_PROTECTION)) {
+		sp11_guard_sp_enabled(false);
+		sp11_guard_diagnostics_degraded(false);
+	}
 	if (q6apm_find_module_by_mid(graph, MODULE_ID_SPEAKER_PROTECTION_VI))
 		sp11_guard_stream(SP11_STREAM_VI, started);
 	if (q6apm_find_module_by_mid(graph, MODULE_ID_CPS_DATA_ROUTER))

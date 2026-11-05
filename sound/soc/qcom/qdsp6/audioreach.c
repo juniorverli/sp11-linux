@@ -1657,20 +1657,27 @@ int audioreach_set_media_format(struct q6apm_graph *graph,
 		if (!rc)
 			rc = audioreach_speaker_protection(graph, module,
 							   PARAM_ID_SP_OP_MODE_NORMAL);
+		sp11_guard_sp_enabled(false);
 		if (!rc)
 			rc = audioreach_module_enable(graph, module, true);
 		if (!rc) {
+			dev_info_once(graph->dev,
+				      "SP module enable succeeded\n");
+			sp11_guard_sp_enabled(true);
 			rc = audioreach_sp11_register_events(graph, module);
 			if (rc == -EOPNOTSUPP) {
 				dev_warn_once(graph->dev,
-					      "SP diagnostics unavailable; speakers remain muted\n");
-				sp11_guard_fault("sp-diagnostics", ADSP_EUNSUPPORTED);
+					      "SP diagnostics unavailable; protection is degraded\n");
+				sp11_guard_diagnostics_degraded(true);
 				rc = 0;
 			} else if (rc) {
+				sp11_guard_sp_enabled(false);
 				dev_err(graph->dev, "SP diagnostics event registration failed: %d\n",
 					rc);
 			}
 		}
+		if (rc)
+			sp11_guard_sp_enabled(false);
 
 		break;
 	case MODULE_ID_SPEAKER_PROTECTION_VI:

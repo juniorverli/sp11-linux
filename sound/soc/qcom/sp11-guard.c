@@ -50,6 +50,8 @@ struct sp11_guard {
 	bool loaded;
 	bool graph_up;
 	bool cps_required;
+	bool sp_enabled;
+	bool diagnostics_degraded;
 	bool fault;
 	char fault_src[24];
 	u32 fault_code;
@@ -77,14 +79,22 @@ static const char *sp11_guard_open_reason(void)
 }
 
 /* Reason the amplifier may not be unmuted, NULL when it may. Called with guard.lock held. */
+static bool sp11_guard_degraded_fault(void);
+
 static const char *sp11_guard_reason(void)
 {
 	const char *reason = sp11_guard_open_reason();
 
 	if (reason)
 		return reason;
+	if (sp11_guard_degraded_fault())
+		return "degraded diagnostics prerequisites are incomplete";
 	if (!guard.graph_up)
 		return "the closed-loop graph is not up";
+	if (!guard.sp_enabled)
+		return "the speaker protection module is not enabled";
+	if (guard.diagnostics_degraded && guard.cal_nominal)
+		return "degraded diagnostics require closed-loop calibration";
 	if (!guard.streams[SP11_STREAM_VI])
 		return "the V/I sense stream is not running";
 	if (guard.cps_required && !guard.streams[SP11_STREAM_CPS])
@@ -186,6 +196,32 @@ void sp11_guard_calibrated(unsigned int ch_mask, bool nominal)
 }
 EXPORT_SYMBOL_GPL(sp11_guard_calibrated);
 
+void sp11_guard_sp_enabled(bool enabled)
+{
+	unsigned long flags;
+	bool was_allowed;
+
+	spin_lock_irqsave(&guard.lock, flags);
+	was_allowed = !sp11_guard_reason();
+	guard.sp_enabled = enabled;
+	sp11_guard_mute_if_refused(was_allowed);
+	spin_unlock_irqrestore(&guard.lock, flags);
+}
+EXPORT_SYMBOL_GPL(sp11_guard_sp_enabled);
+
+void sp11_guard_diagnostics_degraded(bool degraded)
+{
+	unsigned long flags;
+	bool was_allowed;
+
+	spin_lock_irqsave(&guard.lock, flags);
+	was_allowed = !sp11_guard_reason();
+	guard.diagnostics_degraded = degraded;
+	sp11_guard_mute_if_refused(was_allowed);
+	spin_unlock_irqrestore(&guard.lock, flags);
+}
+EXPORT_SYMBOL_GPL(sp11_guard_diagnostics_degraded);
+
 void sp11_guard_fault(const char *src, u32 code)
 {
 	unsigned long flags;
@@ -284,6 +320,16 @@ int sp11_guard_unmute_check(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(sp11_guard_unmute_check);
 
+static bool sp11_guard_degraded_fault(void)
+{
+	return guard.diagnostics_degraded &&
+	       (!guard.loaded || !guard.graph_up || !guard.sp_enabled ||
+		!guard.streams[SP11_STREAM_VI] ||
+		(guard.cps_required && !guard.streams[SP11_STREAM_CPS]) ||
+		((guard.cal_mask & SP11_CAL_ALL_MASK) != SP11_CAL_ALL_MASK) ||
+		guard.cal_nominal);
+}
+
 static int sp11_guard_show(struct seq_file *s, void *unused)
 {
 	const char *reason;
@@ -296,6 +342,9 @@ static int sp11_guard_show(struct seq_file *s, void *unused)
 	seq_printf(s, "loaded: %d\ngraph_up: %d\nvi_streams: %u\ncps_streams: %u\ncps_required: %d\n",
 		   guard.loaded, guard.graph_up, guard.streams[SP11_STREAM_VI],
 		   guard.streams[SP11_STREAM_CPS], guard.cps_required);
+	seq_printf(s, "sp_enabled: %d\ndiagnostics_degraded: %d\n",
+		   guard.sp_enabled, guard.diagnostics_degraded);
+	seq_printf(s, "degraded_fault: %d\n", sp11_guard_degraded_fault());
 	seq_printf(s, "cal_mask: 0x%x\ncal_nominal: %d\n", guard.cal_mask, guard.cal_nominal);
 	seq_printf(s, "fault: %d (%s, 0x%08x)\nnospk: %d\nallow_nominal: %d\n",
 		   guard.fault, guard.fault ? guard.fault_src : "-", guard.fault_code,
