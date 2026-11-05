@@ -10,6 +10,11 @@
 #include "hamoa.dtsi"
 #include "x1-microsoft-denali.dtsi"
 
+/delete-node/ &cpu7;
+/delete-node/ &cpu11;
+/delete-node/ &cpu_pd7;
+/delete-node/ &cpu_pd11;
+
 &{/sound} {
 	status = "disabled";
 };
@@ -83,6 +88,14 @@
 	status = "okay";
 };
 
+&{/cpus/cpu-map/cluster1} {
+	/delete-node/ core3;
+};
+
+&cpu_map_cluster2 {
+	/delete-node/ core3;
+};
+
 &gpi_dma1 {
 	status = "okay";
 };
@@ -106,6 +119,10 @@
 		pinctrl-0 = <&ts_int_n>, <&ts_reset_n>;
 		pinctrl-names = "default";
 	};
+};
+
+&system_pd {
+	/delete-property/ domain-idle-states;
 };
 
 &tlmm {
