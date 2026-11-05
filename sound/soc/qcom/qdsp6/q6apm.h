@@ -60,6 +60,8 @@ struct q6apm {
 
 	struct mutex cmd_lock;
 	struct mutex lock;
+	/* Serialize shared graph lookup, opening and final release. */
+	struct mutex graph_lock;
 	uint32_t state;
 
 	struct list_head widget_list;

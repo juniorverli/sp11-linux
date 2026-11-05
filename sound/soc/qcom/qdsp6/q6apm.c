@@ -43,54 +43,67 @@ static struct audioreach_graph *q6apm_get_audioreach_graph(struct q6apm *apm, ui
 {
 	struct audioreach_graph_info *info;
 	struct audioreach_graph *graph;
-	int id;
+	int ret;
 
+	/* Do not expose an unacknowledged graph or race its last reference. */
+	mutex_lock(&apm->graph_lock);
 	mutex_lock(&apm->lock);
 	graph = idr_find(&apm->graph_idr, graph_id);
 	mutex_unlock(&apm->lock);
-
 	if (graph) {
 		kref_get(&graph->refcount);
-		return graph;
+		goto out;
 	}
 
 	info = idr_find(&apm->graph_info_idr, graph_id);
-
-	if (!info)
-		return ERR_PTR(-ENODEV);
+	if (!info) {
+		ret = -ENODEV;
+		goto fail;
+	}
 
 	graph = kzalloc_obj(*graph);
-	if (!graph)
-		return ERR_PTR(-ENOMEM);
+	if (!graph) {
+		ret = -ENOMEM;
+		goto fail;
+	}
 
 	graph->apm = apm;
 	graph->info = info;
 	graph->id = graph_id;
-
 	graph->graph = audioreach_alloc_graph_pkt(apm, info);
 	if (IS_ERR(graph->graph)) {
-		void *err = graph->graph;
-
-		kfree(graph);
-		return ERR_CAST(err);
+		ret = PTR_ERR(graph->graph);
+		goto free_graph;
 	}
-
-	mutex_lock(&apm->lock);
-	id = idr_alloc(&apm->graph_idr, graph, graph_id, graph_id + 1, GFP_KERNEL);
-	if (id < 0) {
-		dev_err(apm->dev, "Unable to allocate graph id (%d)\n", graph_id);
-		kfree(graph->graph);
-		kfree(graph);
-		mutex_unlock(&apm->lock);
-		return ERR_PTR(id);
-	}
-	mutex_unlock(&apm->lock);
-
 	kref_init(&graph->refcount);
 
-	q6apm_send_cmd_sync(apm, graph->graph, 0);
+	mutex_lock(&apm->lock);
+	ret = idr_alloc(&apm->graph_idr, graph, graph_id, graph_id + 1, GFP_KERNEL);
+	mutex_unlock(&apm->lock);
+	if (ret < 0) {
+		dev_err(apm->dev, "Unable to allocate graph id (%u): %d\n", graph_id, ret);
+		goto free_packet;
+	}
 
+	ret = q6apm_send_cmd_sync(apm, graph->graph, 0);
+	dev_info(apm->dev, "graph %u OPEN rc=%d\n", graph_id, ret);
+	if (ret) {
+		mutex_lock(&apm->lock);
+		idr_remove(&apm->graph_idr, graph_id);
+		mutex_unlock(&apm->lock);
+		goto free_packet;
+	}
+out:
+	mutex_unlock(&apm->graph_lock);
 	return graph;
+
+free_packet:
+	kfree(graph->graph);
+free_graph:
+	kfree(graph);
+fail:
+	mutex_unlock(&apm->graph_lock);
+	return ERR_PTR(ret);
 }
 
 static int audioreach_graph_mgmt_cmd(struct audioreach_graph *graph, uint32_t opcode)
@@ -140,6 +153,14 @@ static void q6apm_put_audioreach_graph(struct kref *ref)
 	kfree(graph);
 }
 
+static void q6apm_put_graph_ref(struct audioreach_graph *graph)
+{
+	struct q6apm *apm = graph->apm;
+
+	mutex_lock(&apm->graph_lock);
+	kref_put(&graph->refcount, q6apm_put_audioreach_graph);
+	mutex_unlock(&apm->graph_lock);
+}
 
 static int q6apm_get_apm_state(struct q6apm *apm)
 {
@@ -786,7 +807,7 @@ struct q6apm_graph *q6apm_graph_open(struct device *dev, q6apm_cb cb,
 free_graph:
 	kfree(graph);
 put_ar_graph:
-	kref_put(&ar_graph->refcount, q6apm_put_audioreach_graph);
+	q6apm_put_graph_ref(ar_graph);
 	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL_GPL(q6apm_graph_open);
@@ -798,7 +819,7 @@ int q6apm_graph_close(struct q6apm_graph *graph)
 	if (q6apm_find_module_by_mid(graph, MODULE_ID_SPEAKER_PROTECTION_VI))
 		sp11_guard_vi_closed(ar_graph);
 	graph->ar_graph = NULL;
-	kref_put(&ar_graph->refcount, q6apm_put_audioreach_graph);
+	q6apm_put_graph_ref(ar_graph);
 	gpr_free_port(graph->port);
 	kfree(graph);
 
@@ -893,6 +914,7 @@ static int apm_probe(gpr_device_t *gdev)
 		return -ENOMEM;
 
 	mutex_init(&apm->lock);
+	mutex_init(&apm->graph_lock);
 	apm->dev = dev;
 	apm->gdev = gdev;
 	init_waitqueue_head(&apm->wait);
