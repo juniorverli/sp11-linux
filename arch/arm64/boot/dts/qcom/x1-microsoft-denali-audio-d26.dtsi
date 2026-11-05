@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * Surface Pro 11: opt-in speaker variant under project decision D26.
+ *
+ * Enables the full sound card and the WSA8845 SoundWire bus, as in
+ * x1-microsoft-denali-audio-speakers.dtsi, and marks the DTB with
+ * /chosen/sp11,speaker-policy. The project image tooling (kernel-dtb-safety)
+ * accepts an enabled speaker path only in a DTB that carries this marker.
+ *
+ * With no SP module, the runtime guard requires this exact value for D26
+ * open-loop playback; an SP graph selects closed-loop independently. Project
+ * tooling also validates the marker. It is not evidence of protection.
+ * The packaged default DTB never includes this file.
+ */
+#include "x1-microsoft-denali-audio-speakers.dtsi"
+
+&{/chosen} {
+	sp11,speaker-policy = "d26-open-loop-v1";
+};
