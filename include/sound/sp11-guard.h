@@ -60,6 +60,13 @@ int sp11_guard_check(struct device *dev);
 int sp11_guard_unmute_check(struct device *dev);
 bool sp11_guard_faulted(void);
 bool sp11_guard_nospk(void);
+/*
+ * True only when the parsed topology is the closed-loop SP+VI topology.
+ * The machine driver uses it to pick the closed-loop speaker ceiling; it
+ * never allows output by itself, every unmute still goes through
+ * sp11_guard_unmute_check().
+ */
+bool sp11_guard_closed_loop(void);
 #else
 static inline int sp11_guard_select_mode(bool marker_valid, bool has_sp) { return -EOPNOTSUPP; }
 static inline void sp11_guard_caps_ready(bool ready) { }
@@ -82,6 +89,7 @@ static inline void sp11_guard_set_mute(void (*mute)(void *data), void *data) { }
 static inline void sp11_guard_clear_mute(void *data) { }
 static inline bool sp11_guard_faulted(void) { return true; }
 static inline bool sp11_guard_nospk(void) { return true; }
+static inline bool sp11_guard_closed_loop(void) { return false; }
 /* Without the guard the speakers are never allowed */
 static inline int sp11_guard_check(struct device *dev) { return -EOPNOTSUPP; }
 static inline int sp11_guard_unmute_check(struct device *dev) { return -EOPNOTSUPP; }

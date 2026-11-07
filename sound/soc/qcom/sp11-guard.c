@@ -129,6 +129,26 @@ void sp11_guard_caps_ready(bool ready)
 }
 EXPORT_SYMBOL_GPL(sp11_guard_caps_ready);
 
+/*
+ * The parsed topology is the only source of the mode; it is selected in the
+ * q6apm component probe, before the card late probe installs the caps. A
+ * refused or failed topology parse leaves the mode unknown, which reads as
+ * false here, so the D26/open-loop ceiling stays in place. This is a
+ * read-only view for the machine driver and does not bypass any gate.
+ */
+bool sp11_guard_closed_loop(void)
+{
+	unsigned long flags;
+	bool closed;
+
+	spin_lock_irqsave(&guard.lock, flags);
+	closed = guard.mode == SP11_MODE_CLOSED_LOOP;
+	spin_unlock_irqrestore(&guard.lock, flags);
+
+	return closed;
+}
+EXPORT_SYMBOL_GPL(sp11_guard_closed_loop);
+
 static const char *sp11_guard_open_reason(void)
 {
 	if (guard.mode == SP11_MODE_UNKNOWN || guard.mode == SP11_MODE_REFUSED)

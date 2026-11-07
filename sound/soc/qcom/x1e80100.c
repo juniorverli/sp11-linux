@@ -49,6 +49,26 @@ static int x1e80100_limit_volume(struct snd_soc_card *card, const char *name,
 	return 0;
 }
 
+/*
+ * Speaker volume ceilings.
+ *
+ * - D26/open-loop (no parsed SP+VI topology) keeps the safe values this
+ *   machine has always used: WSA RX/RX_MIX 81 (-3 dB) and PA 6 (0 dB).
+ * - Closed-loop (the topology parse found the SP module and selected the
+ *   closed-loop mode) uses the Windows endpoint values recovered from
+ *   surface_audiominiext8380.inf (WaveSpeaker MaxEpVolume 0 dBFS) and
+ *   acdb_cal_0D.acdb (target analog PA gain +16.5 dB): WSA RX/RX_MIX 84
+ *   (0 dB) and PA 17 (+16.5 dB, 1.5 dB per step from -9 dB).
+ *
+ * The mode is selected by audioreach_sp11_policy() in the q6apm component
+ * probe, which runs before the card late probe that installs these caps. An
+ * unknown, refused or open-loop mode therefore keeps the D26 values.
+ */
+#define SP11_D26_DIGITAL_MAX	81	/* -3 dB */
+#define SP11_D26_PA_MAX		6	/* 0 dB */
+#define SP11_CL_DIGITAL_MAX	84	/* 0 dB */
+#define SP11_CL_PA_MAX		17	/* +16.5 dB */
+
 static int x1e80100_install_spk_caps(struct snd_soc_card *card)
 {
 	static const char * const required[] = {
@@ -69,25 +89,29 @@ static int x1e80100_install_spk_caps(struct snd_soc_card *card)
 		"WooferRight PA Volume",
 		"TweeterRight PA Volume",
 	};
+	bool closed_loop = sp11_guard_closed_loop();
+	int digital_max = closed_loop ? SP11_CL_DIGITAL_MAX : SP11_D26_DIGITAL_MAX;
+	int pa_max = closed_loop ? SP11_CL_PA_MAX : SP11_D26_PA_MAX;
 	int i, ret;
 
 	sp11_guard_caps_ready(false);
 	for (i = 0; i < ARRAY_SIZE(required); i++) {
 		ret = x1e80100_limit_volume(card, required[i],
-					    strstr(required[i], "PA Volume") ? 6 : 81,
+					    strstr(required[i], "PA Volume") ? pa_max : digital_max,
 					    true);
 		if (ret)
 			return ret;
 	}
 	for (i = 0; i < ARRAY_SIZE(optional); i++) {
 		ret = x1e80100_limit_volume(card, optional[i],
-					    strstr(optional[i], "PA Volume") ? 6 : 81,
+					    strstr(optional[i], "PA Volume") ? pa_max : digital_max,
 					    false);
 		if (ret)
 			return ret;
 	}
 	sp11_guard_caps_ready(true);
-	dev_info(card->dev, "speaker volume caps ready\n");
+	dev_info(card->dev, "speaker volume caps ready (%s: digital %d, PA %d)\n",
+		 closed_loop ? "closed-loop" : "D26/open-loop", digital_max, pa_max);
 	return 0;
 }
 
@@ -99,6 +123,8 @@ static int x1e80100_card_late_probe(struct snd_soc_card *card)
 	/*
 	 * late_probe runs after all card components have bound and before ALSA
 	 * registers PCM devices, so WSA controls exist before caps are required.
+	 * The q6apm component probe has already parsed the topology and selected
+	 * the guard mode, so the caps can follow the closed-loop or D26 ceiling.
 	 * Keep the card available for microphones/DP if a speaker control is
 	 * absent; caps_ready remains false and the amplifier stays muted.
 	 */
