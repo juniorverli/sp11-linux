@@ -57,7 +57,6 @@ MODULE_PARM_DESC(allow_nominal,
 enum sp11_mode {
 	SP11_MODE_UNKNOWN,
 	SP11_MODE_CLOSED_LOOP,
-	SP11_MODE_OPEN_LOOP,
 	SP11_MODE_REFUSED,
 };
 
@@ -96,12 +95,16 @@ int sp11_guard_select_mode(bool marker_valid, bool has_sp)
 	unsigned long flags;
 	enum sp11_mode mode;
 
-	if (!marker_valid)
-		mode = SP11_MODE_REFUSED;
-	else if (has_sp)
+	/*
+	 * Speaker protection with V/I feedback is the only mode: a topology
+	 * without the SP module is refused, so the speakers stay silent (the
+	 * microphone and DisplayPort paths keep working). The D26 open-loop
+	 * experiment is gone; S1 wants protection, not a volume cap.
+	 */
+	if (marker_valid && has_sp)
 		mode = SP11_MODE_CLOSED_LOOP;
 	else
-		mode = SP11_MODE_OPEN_LOOP;
+		mode = SP11_MODE_REFUSED;
 
 	spin_lock_irqsave(&guard.lock, flags);
 	if (guard.mode != SP11_MODE_UNKNOWN && guard.mode != mode) {
@@ -113,7 +116,6 @@ int sp11_guard_select_mode(bool marker_valid, bool has_sp)
 	spin_unlock_irqrestore(&guard.lock, flags);
 
 	pr_info_once("sp11: selected %s speaker mode\n",
-		     mode == SP11_MODE_OPEN_LOOP ? "D26 open-loop" :
 		     mode == SP11_MODE_CLOSED_LOOP ? "closed-loop" : "refused");
 	return mode == SP11_MODE_REFUSED ? -EOPNOTSUPP : 0;
 }
@@ -133,8 +135,8 @@ EXPORT_SYMBOL_GPL(sp11_guard_caps_ready);
  * The parsed topology is the only source of the mode; it is selected in the
  * q6apm component probe, before the card late probe installs the caps. A
  * refused or failed topology parse leaves the mode unknown, which reads as
- * false here, so the D26/open-loop ceiling stays in place. This is a
- * read-only view for the machine driver and does not bypass any gate.
+ * false here, so the lower ceiling stays in place. This is a read-only view
+ * for the machine driver and does not bypass any gate.
  */
 bool sp11_guard_closed_loop(void)
 {
@@ -180,8 +182,6 @@ static const char *sp11_guard_reason(void)
 
 	if (reason)
 		return reason;
-	if (guard.mode == SP11_MODE_OPEN_LOOP)
-		return NULL;
 	if (sp11_guard_degraded_fault())
 		return "degraded diagnostics prerequisites are incomplete";
 	if (!guard.graph_up)
@@ -561,7 +561,6 @@ static int sp11_guard_show(struct seq_file *s, void *unused)
 		   guard.streams[SP11_STREAM_CPS], guard.cps_required);
 	seq_printf(s, "sp_enabled: %d\ndiagnostics_degraded: %d\nmode: %s\ncaps_ready: %d\n",
 		   guard.sp_enabled, guard.diagnostics_degraded,
-		   guard.mode == SP11_MODE_OPEN_LOOP ? "open-loop" :
 		   guard.mode == SP11_MODE_CLOSED_LOOP ? "closed-loop" : "refused",
 		   guard.caps_ready);
 	seq_printf(s, "degraded_fault: %d\n", sp11_guard_degraded_fault());

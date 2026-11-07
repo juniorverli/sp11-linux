@@ -52,7 +52,8 @@ static int x1e80100_limit_volume(struct snd_soc_card *card, const char *name,
 /*
  * Speaker volume ceilings.
  *
- * - D26/open-loop (no parsed SP+VI topology) keeps the safe values this
+ * - a topology without the parsed SP+VI chain (D26 profiles, refused modes)
+ *   keeps the safe values this
  *   machine has always used: WSA RX/RX_MIX 81 (-3 dB) and PA 6 (0 dB).
  * - Closed-loop (the topology parse found the SP module and selected the
  *   closed-loop mode) uses the Windows endpoint values recovered from
@@ -62,7 +63,7 @@ static int x1e80100_limit_volume(struct snd_soc_card *card, const char *name,
  *
  * The mode is selected by audioreach_sp11_policy() in the q6apm component
  * probe, which runs before the card late probe that installs these caps. An
- * unknown, refused or open-loop mode therefore keeps the D26 values.
+ * unknown, refused or D26-profile mode therefore keeps the lower values.
  */
 #define SP11_D26_DIGITAL_MAX	81	/* -3 dB */
 #define SP11_D26_PA_MAX		6	/* 0 dB */
@@ -111,7 +112,7 @@ static int x1e80100_install_spk_caps(struct snd_soc_card *card)
 	}
 	sp11_guard_caps_ready(true);
 	dev_info(card->dev, "speaker volume caps ready (%s: digital %d, PA %d)\n",
-		 closed_loop ? "closed-loop" : "D26/open-loop", digital_max, pa_max);
+		 closed_loop ? "closed-loop" : "fallback (no closed loop)", digital_max, pa_max);
 	return 0;
 }
 
